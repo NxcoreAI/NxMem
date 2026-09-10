@@ -1,0 +1,12 @@
+[
+  { "id": "multi-partial", "category": 1, "answer": "pottery, camping, painting, swimming", "prediction": "swimming, pottery, painting" },
+  { "id": "multi-reordered", "category": 1, "answer": "New York, Los Angeles", "prediction": "Los Angeles, New York" },
+  { "id": "temporal", "category": 2, "answer": "7 May 2023", "prediction": "May 7, 2023" },
+  { "id": "stem-and-punctuation", "category": 2, "answer": "The runners were running and jumping.", "prediction": "runner runs jumped" },
+  { "id": "semicolon", "category": 3, "answer": "National park; she likes the outdoors", "prediction": "the national park" },
+  { "id": "open-domain", "category": 4, "answer": "mental health support", "prediction": "health support" },
+  { "id": "repeated-token", "category": 4, "answer": "cat dog dog", "prediction": "cat cat dog" },
+  { "id": "refusal-primary", "category": 5, "answer": "", "prediction": "No Information Available." },
+  { "id": "refusal-secondary", "category": 5, "answer": "", "prediction": "That detail was not mentioned in the conversation." },
+  { "id": "refusal-semantic-only", "category": 5, "answer": "", "prediction": "I cannot determine that." }
+]

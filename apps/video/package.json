@@ -1,0 +1,23 @@
+{
+  "name": "@nexcore/context-engine-video",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.tsx",
+    "render": "remotion render src/index.tsx MemoryEngineDemo out/memory-engine-demo.mp4 --codec=h264",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.506",
+    "remotion": "^4.0.506",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.4"
+  }
+}

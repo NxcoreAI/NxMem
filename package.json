@@ -1,0 +1,17 @@
+{
+  "name": "nexcore-context-engine",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "import:weekly-facts": "pnpm --filter @nexcore/backend import:weekly-facts",
+    "reindex:embeddings": "pnpm --filter @nexcore/backend reindex:embeddings"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

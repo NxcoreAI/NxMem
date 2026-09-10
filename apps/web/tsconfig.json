@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "types": ["vite/client"],
+    "paths": {
+      "@nexcore/shared": ["../../packages/shared/src/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

@@ -1,0 +1,29 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.*
+coverage
+.vite
+*.tsbuildinfo
+config/*.runtime.json
+# local AI tool config / caches / logs
+.omx/
+.claude/
+.agents/
+.codex/
+.pnpm-store/
+
+# Generated benchmark and SQLite runtime artifacts
+apps/backend/data/
+apps/backend/longmemeval-*.json
+*.sqlite-shm
+*.sqlite-wal
+
+# benchmark files
+datasets
+LongMemEval
+longmemeval_benchmark
+
+config/
+data/

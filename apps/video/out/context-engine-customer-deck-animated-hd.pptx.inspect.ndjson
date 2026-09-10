@@ -1,0 +1,89 @@
+{"kind":"deck","id":"pr/zktzk8","name":"Deck"}
+{"kind":"layout","layoutId":"/ppt/slideMasters/slideMaster1.xml","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout1.xml","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/y90nupkv","slide":1,"title":"客户技术介绍 · 动态可视化版","textShapes":1}
+{"kind":"shape","id":"sh/547294r6","slide":1,"bbox":[72,560,470,74]}
+{"kind":"textbox","id":"sh/k3yl0zql","slide":1,"text":"客户技术介绍 · 动态可视化版","textPreview":"客户技术介绍 · 动态可视化版","textChars":15,"textLines":1,"bbox":[94,576,420,36]}
+{"kind":"image","id":"im/qh0jmhw7","slide":1,"name":"","alt":"Looping Context Engine opening animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/y90nupkv","slide":1,"text":"开场先建立产品定位：这不是一个简单的向量数据库，而是一套以证据为基础、可追溯、可治理的智能体记忆系统。\n\n[Sources]\n- Internal video: apps/video/out/memory-engine-demo.mp4\n- Internal specification: openspec/specs/context-engine/spec.md"}
+{"kind":"slide","id":"sl/hwbqtkby","slide":2,"title":"客户应记住","textShapes":6}
+{"kind":"shape","id":"sh/9072xkry","slide":2,"bbox":[852,132,370,455]}
+{"kind":"shape","id":"sh/ozy1ofad","slide":2,"name":"takeaway-先保留证据，再生成记忆","bbox":[884,178,310,330]}
+{"kind":"textbox","id":"sh/b29kza94","slide":2,"text":"客户应记住","textPreview":"客户应记住","textChars":5,"textLines":1,"bbox":[908,200,262,24]}
+{"kind":"textbox","id":"sh/a10jqpsj","slide":2,"text":"先保留证据，再生成记忆","textPreview":"先保留证据，再生成记忆","textChars":11,"textLines":1,"bbox":[908,238,262,58]}
+{"kind":"shape","id":"sh/x4r21kru","slide":2,"bbox":[908,318,8,8]}
+{"kind":"textbox","id":"sh/w3i1sfa9","slide":2,"text":"MemoryEvent 入口统一","textPreview":"MemoryEvent 入口统一","textChars":16,"textLines":1,"bbox":[932,306,238,38]}
+{"kind":"shape","id":"sh/r65knqtk","slide":2,"bbox":[908,372,8,8]}
+{"kind":"textbox","id":"sh/q5wjelsz","slide":2,"text":"SourceRef 与权限快照随链路传递","textPreview":"SourceRef 与权限快照随链路传递","textChars":20,"textLines":1,"bbox":[932,360,238,38]}
+{"kind":"shape","id":"sh/ove9o7yd","slide":2,"bbox":[908,426,8,8]}
+{"kind":"textbox","id":"sh/9wnqhczy","slide":2,"text":"失败和不支持模态仍可审计重放","textPreview":"失败和不支持模态仍可审计重放","textChars":14,"textLines":1,"bbox":[932,414,238,38]}
+{"kind":"textbox","id":"sh/mtwrmxg7","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1134,642,60,24]}
+{"kind":"image","id":"im/kzexcfip","slide":2,"name":"","alt":"Looping evidence-first ingestion pipeline animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/hwbqtkby","slide":2,"text":"解释主链路：Agent 或连接器先写入 MemoryEvent，系统把原始证据落到 Data Lake，再融合成 FactItem，最后进入 STM 准入。强调事实生成在记忆准入之前。\n\n[Sources]\n- Internal source: apps/video/src/MemoryEngineVideo.tsx\n- Internal specification: openspec/specs/context-engine/spec.md"}
+{"kind":"slide","id":"sl/ofy9wn61","slide":3,"title":"不是所有事实","textShapes":9}
+{"kind":"shape","id":"sh/cza94vmx","slide":3,"bbox":[884,160,314,360]}
+{"kind":"textbox","id":"sh/d0jax03i","slide":3,"text":"不是所有事实\n都应该变成记忆","textPreview":"不是所有事实 | 都应该变成记忆","textChars":14,"textLines":2,"bbox":[912,190,258,76]}
+{"kind":"textbox","id":"sh/298ryl4v","slide":3,"text":"准入结果可解释、可追责","textPreview":"准入结果可解释、可追责","textChars":11,"textLines":1,"bbox":[912,286,258,28]}
+{"kind":"textbox","id":"sh/3ah8rqlg","slide":3,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[912,342,42,26]}
+{"kind":"textbox","id":"sh/obq90bml","slide":3,"text":"重要性与置信度决定价值","textPreview":"重要性与置信度决定价值","textChars":11,"textLines":1,"bbox":[960,336,210,36]}
+{"kind":"textbox","id":"sh/pcjqtg36","slide":3,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[912,390,42,26]}
+{"kind":"textbox","id":"sh/m5cra54z","slide":3,"text":"敏感性与权限构成硬边界","textPreview":"敏感性与权限构成硬边界","textChars":11,"textLines":1,"bbox":[960,384,210,36]}
+{"kind":"textbox","id":"sh/n6ls3alk","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[912,438,42,26]}
+{"kind":"textbox","id":"sh/n2l4fq98","slide":3,"text":"命中规则和拒绝原因进入审计","textPreview":"命中规则和拒绝原因进入审计","textChars":13,"textLines":1,"bbox":[960,432,210,36]}
+{"kind":"textbox","id":"sh/m1c3mlsn","slide":3,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1134,642,60,24]}
+{"kind":"image","id":"im/ipw7elwr","slide":3,"name":"","alt":"Looping explainable STM admission animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/ofy9wn61","slide":3,"text":"逐项解释 STM 的七类准入信号。重点说明敏感信息不是依靠模型自行判断，而是由系统规则决定 rejected 或 pending_confirm。\n\n[Sources]\n- Internal prompt: STM到LTM七维评分Prompt.md\n- Internal specification: openspec/specs/context-engine/spec.md"}
+{"kind":"slide","id":"sl/jyx0ra1s","slide":4,"title":"混合检索解决的","textShapes":6}
+{"kind":"shape","id":"sh/1cj2d8b6","slide":4,"bbox":[880,164,326,310]}
+{"kind":"textbox","id":"sh/0ba143al","slide":4,"text":"混合检索解决的\n不是‘相似’，而是‘相关’","textPreview":"混合检索解决的 | 不是‘相似’，而是‘相关’","textChars":21,"textLines":2,"bbox":[906,194,274,84]}
+{"kind":"textbox","id":"sh/rm1k7yt4","slide":4,"text":"关键词","textPreview":"关键词","textChars":3,"textLines":1,"bbox":[906,314,72,26]}
+{"kind":"textbox","id":"sh/ql8jytsj","slide":4,"text":"语义","textPreview":"语义","textChars":2,"textLines":1,"bbox":[1000,314,72,26]}
+{"kind":"textbox","id":"sh/doj29oba","slide":4,"text":"关系","textPreview":"关系","textChars":2,"textLines":1,"bbox":[1094,314,72,26]}
+{"kind":"textbox","id":"sh/sna103ap","slide":4,"text":"图关系把 supports、updates、conflicts_with 直接带入召回结果。","textPreview":"图关系把 supports、updates、conflicts_with 直接带入召回结果。","textChars":46,"textLines":1,"bbox":[906,360,274,72]}
+{"kind":"textbox","id":"sh/3ihk3et8","slide":4,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1134,642,60,24]}
+{"kind":"image","id":"im/z6lc7q1o","slide":4,"name":"","alt":"Looping graph-aware hybrid retrieval animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/jyx0ra1s","slide":4,"text":"强调 graph store 是召回的组成部分，不是事后展示。关键词、向量、图邻域、时间和反馈共同形成候选排序，冲突关系会继续传播到 Context Pack。\n\n[Sources]\n- Internal change: openspec/changes/add-memory-graph-query-api\n- Internal specification: openspec/specs/context-engine/spec.md"}
+{"kind":"slide","id":"sl/i107q5of","slide":5,"title":"Dreaming 把短期价值","textShapes":8}
+{"kind":"shape","id":"sh/dgbulwnm","slide":5,"bbox":[872,178,334,326]}
+{"kind":"textbox","id":"sh/cf2tcr61","slide":5,"text":"Dreaming 把短期价值\n转成长期资产","textPreview":"Dreaming 把短期价值 | 转成长期资产","textChars":21,"textLines":2,"bbox":[900,208,278,74]}
+{"kind":"textbox","id":"sh/z2tcnm5s","slide":5,"text":"23:00","textPreview":"23:00","textChars":5,"textLines":1,"bbox":[900,318,106,32]}
+{"kind":"textbox","id":"sh/yhkbe1o7","slide":5,"text":"每日北京时间自动触发","textPreview":"每日北京时间自动触发","textChars":10,"textLines":1,"bbox":[1014,316,158,36]}
+{"kind":"textbox","id":"sh/l4bupwny","slide":5,"text":"1 STM","textPreview":"1 STM","textChars":5,"textLines":1,"bbox":[900,374,106,32]}
+{"kind":"textbox","id":"sh/032tgr6d","slide":5,"text":"每次模型请求只处理一条","textPreview":"每次模型请求只处理一条","textChars":11,"textLines":1,"bbox":[1014,372,158,36]}
+{"kind":"textbox","id":"sh/n6dcr65o","slide":5,"text":"3 PATHS","textPreview":"3 PATHS","textChars":7,"textLines":1,"bbox":[900,430,106,32]}
+{"kind":"textbox","id":"sh/m5kbi1oj","slide":5,"text":"consolidate / observe / drop","textPreview":"consolidate / observe / drop","textChars":28,"textLines":1,"bbox":[1014,428,158,36]}
+{"kind":"textbox","id":"sh/w32dkbuh","slide":5,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1134,642,60,24]}
+{"kind":"image","id":"im/6p4fyl47","slide":5,"name":"","alt":"Looping Dreaming consolidation animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/i107q5of","slide":5,"text":"介绍 Dreaming 的调度和抢占机制：后台任务可以暂停并从 checkpoint 恢复，前台用户交互始终优先。巩固成功时 LTM 接管来源事实和证据关系。\n\n[Sources]\n- Internal design: Context-Engine-做梦巩固调度机制实现方案.md\n- Internal source: apps/backend/src/modules/context-engine/dreaming-worker.ts"}
+{"kind":"slide","id":"sl/x8f69ofe","slide":6,"title":"模型看到的不是记忆列表","textShapes":10}
+{"kind":"shape","id":"sh/yhg7epsj","slide":6,"bbox":[858,160,352,372]}
+{"kind":"textbox","id":"sh/zi98nu94","slide":6,"text":"模型看到的不是记忆列表\n而是预算编排后的上下文","textPreview":"模型看到的不是记忆列表 | 而是预算编排后的上下文","textChars":23,"textLines":2,"bbox":[886,192,296,78]}
+{"kind":"textbox","id":"sh/87ipkzal","slide":6,"text":"PROFILE","textPreview":"PROFILE","textChars":7,"textLines":1,"bbox":[886,304,92,26]}
+{"kind":"textbox","id":"sh/98rqt4r6","slide":6,"text":"稳定画像与长期偏好","textPreview":"稳定画像与长期偏好","textChars":9,"textLines":1,"bbox":[988,298,190,34]}
+{"kind":"textbox","id":"sh/ml07i9sv","slide":6,"text":"TASK","textPreview":"TASK","textChars":4,"textLines":1,"bbox":[886,352,92,26]}
+{"kind":"textbox","id":"sh/7m98ru9g","slide":6,"text":"与当前任务最相关的事实","textPreview":"与当前任务最相关的事实","textChars":11,"textLines":1,"bbox":[988,346,190,34]}
+{"kind":"textbox","id":"sh/oryp8fah","slide":6,"text":"CONFLICTS","textPreview":"CONFLICTS","textChars":9,"textLines":1,"bbox":[886,400,92,26]}
+{"kind":"textbox","id":"sh/pc76hkr2","slide":6,"text":"不兼容主张显式提示","textPreview":"不兼容主张显式提示","textChars":9,"textLines":1,"bbox":[988,394,190,34]}
+{"kind":"textbox","id":"sh/h4bupgn6","slide":6,"text":"CITATIONS","textPreview":"CITATIONS","textChars":9,"textLines":1,"bbox":[886,448,92,26]}
+{"kind":"textbox","id":"sh/w32twb6l","slide":6,"text":"每条结论都可回链","textPreview":"每条结论都可回链","textChars":8,"textLines":1,"bbox":[988,442,190,34]}
+{"kind":"textbox","id":"sh/v2tcn650","slide":6,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1134,642,60,24]}
+{"kind":"image","id":"im/t03ulobq","slide":6,"name":"","alt":"Looping Context Pack budget assembly animation","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/x8f69ofe","slide":6,"text":"说明 R2 组装层如何分配 token 预算。Context Pack 同时输出 citations、conflicts、compressionSteps 和 dropped reasons，使 Agent 能够在有限窗口中使用最重要的上下文。\n\n[Sources]\n- Internal source: apps/backend/src/modules/context-engine/assemble-context.ts\n- Internal specification: openspec/specs/context-engine/spec.md"}
+{"kind":"slide","id":"sl/gnmp4jqx","slide":7,"title":"NEXCORE / CONTEXT ENGINE","textShapes":11}
+{"kind":"shape","id":"sh/o761ov2t","slide":7,"bbox":[0,0,1280,720]}
+{"kind":"textbox","id":"sh/cb2tkvap","slide":7,"text":"NEXCORE / CONTEXT ENGINE","textPreview":"NEXCORE / CONTEXT ENGINE","textChars":24,"textLines":1,"bbox":[72,58,360,28]}
+{"kind":"textbox","id":"sh/dcbud0ra","slide":7,"text":"一套让智能体记得住，\n也解释得清的记忆基础设施","textPreview":"一套让智能体记得住， | 也解释得清的记忆基础设施","textChars":23,"textLines":2,"bbox":[72,132,720,126]}
+{"kind":"textbox","id":"sh/ydkbm5sv","slide":7,"text":"客户最终获得的不是更多上下文，而是更可信的上下文。","textPreview":"客户最终获得的不是更多上下文，而是更可信的上下文。","textChars":25,"textLines":1,"bbox":[72,286,720,42]}
+{"kind":"shape","id":"sh/zedcfa9g","slide":7,"bbox":[72,424,252,122]}
+{"kind":"textbox","id":"sh/kzmdova1","slide":7,"text":"EVIDENCE","textPreview":"EVIDENCE","textChars":8,"textLines":1,"bbox":[94,446,208,24]}
+{"kind":"textbox","id":"sh/l0vuh0rm","slide":7,"text":"原始来源持续可回链","textPreview":"原始来源持续可回链","textChars":9,"textLines":1,"bbox":[94,484,208,42]}
+{"kind":"shape","id":"sh/eh0ba1sr","slide":7,"bbox":[358,424,252,122]}
+{"kind":"textbox","id":"sh/fi9c369c","slide":7,"text":"RELATION","textPreview":"RELATION","textChars":8,"textLines":1,"bbox":[380,446,208,24]}
+{"kind":"textbox","id":"sh/baxkjqlk","slide":7,"text":"支持、更新与冲突可计算","textPreview":"支持、更新与冲突可计算","textChars":11,"textLines":1,"bbox":[380,484,208,42]}
+{"kind":"shape","id":"sh/a9ojq5kz","slide":7,"bbox":[644,424,252,122]}
+{"kind":"textbox","id":"sh/xcz2l03q","slide":7,"text":"GOVERNANCE","textPreview":"GOVERNANCE","textChars":10,"textLines":1,"bbox":[666,446,208,24]}
+{"kind":"textbox","id":"sh/cbq1sv25","slide":7,"text":"权限和敏感性贯穿全链路","textPreview":"权限和敏感性贯穿全链路","textChars":11,"textLines":1,"bbox":[666,484,208,42]}
+{"kind":"shape","id":"sh/n6x0fqlo","slide":7,"bbox":[930,424,252,122]}
+{"kind":"textbox","id":"sh/25ojml43","slide":7,"text":"AUDIT","textPreview":"AUDIT","textChars":5,"textLines":1,"bbox":[952,446,208,24]}
+{"kind":"textbox","id":"sh/p8fih03e","slide":7,"text":"每次抽取、准入和压缩都有 trace","textPreview":"每次抽取、准入和压缩都有 trace","textChars":18,"textLines":1,"bbox":[952,484,208,42]}
+{"kind":"notes","id":"nt/gnmp4jqx","slide":7,"text":"收束时把技术能力转译成客户价值：证据可回链、关系可计算、权限可治理、过程可审计。根据客户场景进入问答或演示真实调试台。\n\n[Sources]\n- Internal product documentation: PRD.md\n- Internal specification: openspec/specs/context-engine/spec.md"}

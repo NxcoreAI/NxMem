@@ -1,0 +1,14 @@
+{
+  "name": "@nexcore/shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "echo 'shared: lint not configured yet'",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'shared: test not configured yet'"
+  }
+}
+

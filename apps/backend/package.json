@@ -1,0 +1,36 @@
+{
+  "name": "@nexcore/backend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --import tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo 'backend lint not configured yet'",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "EMBEDDING_PROTOCOL=deterministic-test EMBEDDING_MODEL=deterministic-test EMBEDDING_DIMENSIONS=512 RERANKER_ENABLED=false node --import tsx --test \"src/**/*.test.ts\"",
+    "mcp:context-inventory": "node --no-warnings=ExperimentalWarning --import tsx src/modules/context-engine/context-inventory-mcp.ts",
+    "eval:longmemeval": "node --import tsx src/modules/context-engine/longmemeval-cli.ts",
+    "eval:retrieval": "node --import tsx src/modules/context-engine/retrieval-benchmark-cli.ts",
+    "eval:locomo-retrieval": "node --import tsx src/modules/context-engine/locomo-retrieval-benchmark-cli.ts",
+    "eval:locomo": "node --import tsx src/modules/context-engine/locomo-evaluation-cli.ts",
+    "accept:timeline-fusion-real-data": "node --import tsx src/modules/context-engine/timeline-fusion-real-data-acceptance.ts",
+    "import:weekly-facts": "node --import tsx src/modules/context-engine/structured-fact-markdown-import-cli.ts",
+    "backfill:temporal": "node --import tsx src/modules/context-engine/temporal-backfill-cli.ts",
+    "reindex:embeddings": "node --import tsx src/modules/context-engine/embedding-reindex-cli.ts",
+    "reindex:text": "node --import tsx src/modules/context-engine/text-index-reindex-cli.ts",
+    "reindex:facts": "node --import tsx src/modules/context-engine/fact-index-reindex-cli.ts",
+    "restore:dreaming-stm": "node --import tsx src/modules/context-engine/dreaming-stm-recovery-cli.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "fastify": "^4.28.1",
+    "neo4j-driver": "^5.28.1",
+    "openai": "^6.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}
