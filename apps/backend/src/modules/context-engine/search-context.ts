@@ -1,4 +1,5 @@
 import type { ContextEngineRepository } from "./persistence/repository.js";
+import { memoryOwnerTypeForId } from "./persistence/graph-store.js";
 import type {
   FactItem,
   FactVersion,
@@ -45,6 +46,18 @@ import { createCrossEncoderReranker, type CrossEncoderReranker } from "./cross-e
 
 const searchMaterializationConcurrency = 8;
 
+const graphNeighborSeedLimit = 10;
+const graphNeighborSupplementLimit = 20;
+const graphNeighborRelationWeights: Partial<Record<RelationEdge["relationType"], number>> = {
+  is_same_as: 1,
+  alias_of: 1,
+  updates: 0.9,
+  derived_from: 0.7,
+  part_of: 0.7,
+  conflicts_with: 0.6
+};
+const graphNeighborConfidenceFactors = { high: 1, medium: 0.7, low: 0.4 } as const;
+
 export interface ScoreBreakdown {
   keyword: number;
   vector: number;
@@ -84,6 +97,8 @@ export interface ContextQuery {
   limit?: number;
   offset?: number;
   includeInactive?: boolean;
+  /** Expand graph relation neighbors of top-ranked memories as supplemental results. */
+  graphNeighborRecall?: boolean;
   sessionId?: string;
   taskId?: string;
   requestId?: string;
@@ -244,7 +259,7 @@ export async function searchContext(
         options.embeddingClient ?? createEmbeddingClient(),
         factContextLoader
       )
-    : Promise.resolve([] as CandidateResult[]);
+    : Promise.resolve({ base: [] as CandidateResult[], supplements: [] as CandidateResult[] });
   const evidenceCandidatesPromise = shouldSearchEvidence
     ? repository.findEvidenceCandidates({
         ...(query.tenantId ? { tenantId: query.tenantId } : {}),
@@ -277,7 +292,7 @@ export async function searchContext(
     evidenceCandidatesPromise,
     factResultsPromise
   ]);
-  const memoryResults = materialized
+  const collectActiveMemoryResults = (items: CandidateResult[]) => items
     .filter((item): item is ContextSearchResult => {
       if ("dropReason" in item) {
         dropped.push({ id: item.id, layer: item.layer, reason: item.dropReason });
@@ -286,9 +301,12 @@ export async function searchContext(
       return true;
     })
     .filter((item) => layer === "all" || item.layer === layer);
+  const memoryResults = collectActiveMemoryResults(materialized.base);
+  const supplementResults = collectActiveMemoryResults(materialized.supplements);
   const rankedMemoryResults = memoryReranker
     ? await rerankMemoryResults(retrievalQuery, memoryResults, memoryReranker, dropped)
     : memoryResults;
+  const memoryResultsWithSupplements = supplementBaseRanking(rankedMemoryResults, supplementResults);
   const evidenceResults = evidenceCandidates.flatMap((candidate) => {
     if (candidate.permissionStatus === "filtered") {
       dropped.push({ id: candidate.id, layer: "evidence", reason: "permission_filtered" });
@@ -314,7 +332,7 @@ export async function searchContext(
   const rerankedFactResults = factResults.filter((result) => result.scoreBreakdown.reranker !== undefined);
   const candidates = rerankedFactResults.length >= limit
     ? [...rerankedFactResults, ...evidenceResults].sort(compareSearchResults)
-    : [...rankedMemoryResults, ...factResults, ...evidenceResults].sort(compareSearchResults);
+    : [...memoryResultsWithSupplements, ...factResults, ...evidenceResults].sort(compareSearchResults);
   const deduped = dedupeResults(candidates, dropped, query.contextScopeId !== undefined);
 
   const baseResponse: ContextSearchResponse = {
@@ -415,6 +433,7 @@ function buildRerankerMemoryText(result: ContextSearchResult) {
 
 type CandidateResult = ContextSearchResult | { id: string; layer: "stm" | "ltm"; dropReason: string };
 type RankedOwner = { ownerType: "stm" | "ltm"; ownerId: string; rrfScore: number };
+type GraphNeighborCandidate = { ownerType: "stm" | "ltm"; ownerId: string; neighborScore: number };
 type SourceScopedOwner = { ownerType: "stm" | "ltm"; ownerId: string; score: number };
 type SourceScope = {
   active: boolean;
@@ -493,7 +512,7 @@ async function retrieveMemoryCandidates(
   retrievalLimit: number | undefined,
   embeddingClient: EmbeddingClient,
   factContextLoader: FactContextLoader
-) {
+): Promise<{ base: CandidateResult[]; supplements: CandidateResult[] }> {
   const queryVector = normalizedQuery ? await createQueryVector(normalizedQuery, embeddingClient) : [];
   const keywordCorpusStats = buildKeywordCorpusStats(
     await repository.listKeywordCorpusContents(),
@@ -513,7 +532,10 @@ async function retrieveMemoryCandidates(
     !sourceScope.active || sourceScope.ownerKeys.has(`${item.ownerType}:${item.ownerId}`)
   );
   const merged = retrievalLimit === undefined ? ranked : ranked.slice(0, retrievalLimit);
-  return mapWithConcurrency(merged, searchMaterializationConcurrency, (item) =>
+  const neighborCandidates = query.graphNeighborRecall
+    ? await collectGraphNeighborCandidates(repository, merged, query, sourceScope)
+    : [];
+  const base = await mapWithConcurrency(merged, searchMaterializationConcurrency, (item) =>
     materializeCandidate(
       repository,
       item.ownerType,
@@ -528,6 +550,85 @@ async function retrieveMemoryCandidates(
       keywordCorpusStats
     )
   );
+  const supplements = await mapWithConcurrency(neighborCandidates, searchMaterializationConcurrency, async (item) => {
+    const candidate = await materializeCandidate(
+      repository,
+      item.ownerType,
+      item.ownerId,
+      normalizedQuery,
+      queryTokens,
+      query,
+      0,
+      resolvedTemporal,
+      queryVector,
+      factContextLoader,
+      keywordCorpusStats
+    );
+    if ("dropReason" in candidate) return candidate;
+    return decorateGraphNeighborResult(candidate, item.neighborScore);
+  });
+  return { base, supplements };
+}
+
+// ponytail: 1-hop expansion, both edge directions weighted equally; add
+// direction-aware or multi-hop traversal only if recall measurably needs it.
+async function collectGraphNeighborCandidates(
+  repository: ContextEngineRepository,
+  baseRanking: RankedOwner[],
+  query: ContextQuery,
+  sourceScope: SourceScope
+): Promise<GraphNeighborCandidate[]> {
+  const seeds = baseRanking.slice(0, graphNeighborSeedLimit);
+  if (!seeds.length) return [];
+  const baseOwnerKeys = new Set(baseRanking.map((item) => `${item.ownerType}:${item.ownerId}`));
+  const layerFilter = layerOwnerTypes(query.layer);
+  const edgeLists = await Promise.all(seeds.map((seed) => repository.getGraphRelationEdges(seed.ownerId)));
+  const bestByOwnerKey = new Map<string, GraphNeighborCandidate>();
+  seeds.forEach((seed, seedIndex) => {
+    for (const edge of edgeLists[seedIndex] ?? []) {
+      const relationWeight = graphNeighborRelationWeights[edge.relationType];
+      if (relationWeight === undefined) continue;
+      const neighborId = edge.fromId === seed.ownerId ? edge.toId : edge.fromId;
+      const ownerType = memoryOwnerTypeForId(neighborId);
+      if (!ownerType) continue;
+      if (layerFilter && !layerFilter.includes(ownerType)) continue;
+      const ownerKey = `${ownerType}:${neighborId}`;
+      if (baseOwnerKeys.has(ownerKey)) continue;
+      if (sourceScope.active && !sourceScope.ownerKeys.has(ownerKey)) continue;
+      const neighborScore = relationWeight *
+        (typeof edge.strength === "number" ? edge.strength : 0.5) *
+        graphNeighborConfidenceFactors[edge.confidence ?? "medium"];
+      const existing = bestByOwnerKey.get(ownerKey);
+      if (!existing || existing.neighborScore < neighborScore) {
+        bestByOwnerKey.set(ownerKey, { ownerType, ownerId: neighborId, neighborScore });
+      }
+    }
+  });
+  return [...bestByOwnerKey.values()]
+    .sort((left, right) => right.neighborScore - left.neighborScore || left.ownerId.localeCompare(right.ownerId))
+    .slice(0, graphNeighborSupplementLimit);
+}
+
+function decorateGraphNeighborResult(result: ContextSearchResult, neighborScore: number): ContextSearchResult {
+  const scoreBreakdown = {
+    ...result.scoreBreakdown,
+    graph: Math.max(result.scoreBreakdown.graph, neighborScore)
+  };
+  return {
+    ...result,
+    score: finalScore(scoreBreakdown),
+    reason: "graph_neighbor_recall",
+    scoreBreakdown
+  };
+}
+
+function supplementBaseRanking(
+  base: ContextSearchResult[],
+  supplements: ContextSearchResult[]
+): ContextSearchResult[] {
+  if (!supplements.length) return base;
+  const baseKeys = new Set(base.map((item) => `${item.layer}:${item.id}`));
+  return [...base, ...supplements.filter((item) => !baseKeys.has(`${item.layer}:${item.id}`))];
 }
 
 async function retrieveFactCandidates(

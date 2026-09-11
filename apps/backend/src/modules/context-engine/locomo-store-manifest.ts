@@ -23,7 +23,7 @@ export function createLocomoStoreManifest(input: LocomoStoreManifestInput) {
     embeddingFingerprint: input.embeddingFingerprint,
     schemaFingerprint: fingerprint("locomo-native-result-schema.v1|context-engine-sqlite-schema"),
     rerankerFingerprint: rerankerFingerprint(input.config),
-    promptFingerprint: fingerprint("benchmark-answer-context-v1|locomo-answer-prompt-v6-frozen|locomo-refusal-relaxed-v1"),
+    promptFingerprint: fingerprint("benchmark-answer-context-v1|locomo-answer-prompt-v7-reference"),
     graphFingerprint: locomoGraphFingerprint(input.config),
     ingestionModel: input.ingestionModel,
     answerModel: input.answerModel

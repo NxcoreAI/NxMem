@@ -248,12 +248,12 @@ export async function evaluateLocomoQuestion(
     ...(question.referenceTime ? { referenceTime: question.referenceTime } : {}),
     modelRunId: "locomo",
     storeNamespace: LOCOMO_EVALUATION_PROFILE,
-    allowedLayers: ["fact", "stm"],
+    allowedLayers: ["stm"],
     candidateLimit: options.candidateLimit ?? BENCHMARK_ANSWER_CANDIDATE_LIMIT,
     evidenceLimit: options.evidenceLimit ?? BENCHMARK_ANSWER_EVIDENCE_LIMIT,
     tokenBudget: options.tokenBudget ?? BENCHMARK_ANSWER_TOKEN_BUDGET,
     includeInactive: true,
-    factRetrieval: true,
+    factRetrieval: false,
     ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
     ...(options.memoryReranker !== undefined ? { memoryReranker: options.memoryReranker } : {}),
     ...(options.factReranker !== undefined ? { factReranker: options.factReranker } : {})
@@ -478,55 +478,42 @@ function assertAllowedLayers(items: Array<{ layer: string; id: string }>, locati
   if (invalid) throw new Error(`${location} contains forbidden ${invalid.layer} item: ${invalid.id}`);
 }
 
-// LoCoMo-specific answer prompt, maintained independently from the LongMemEval prompt
-// (locomo-answer-prompt-v6). The base structure was derived from the LongMemEval answer
-// prompt but is now frozen here so that edits to either prompt never affect the other.
+// LoCoMo-specific answer prompt, maintained independently from the LongMemEval prompt.
+// locomo-answer-prompt-v7: a concise, instruction-first template ported from the reference
+// answer prompt ("You are a knowledgeable and helpful AI assistant ... Answer:"), replacing
+// the earlier prescriptive v6 template and its worked calculation examples. It keeps the
+// LoCoMo-specific relative-time → absolute-date rule, the Question Date line, and the
+// "No information available" refusal answer.
 export function buildLocomoAnswerPrompt(input: {
   question: string;
   questionDate?: string;
   serializedPrompt: string;
 }) {
   return [
-    "Answer the question using the provided Context Pack.",
+    "You are a knowledgeable and helpful AI assistant.",
+    "# CONTEXT:",
+    "You have access to memories from two speakers in a conversation. These memories contain timestamped information that may be relevant to answering the question.",
+    "# INSTRUCTIONS:",
+    "1. Carefully analyze all provided memories. Synthesize information across different entries if needed to form a complete answer.",
+    "2. Pay close attention to the timestamps to determine the answer. If memories contain contradictory information, the most recent memory is the source of truth.",
+    "3. If the question asks about a specific event or fact, look for direct evidence in the memories.",
+    "4. Your answer must be grounded in the memories. However, you may use general world knowledge to interpret or complete information found within a memory (e.g., identifying a landmark mentioned by description).",
+    "5. If the question involves time references (like \"last year\", \"two months ago\", etc.), you must calculate the actual date based on the memory's timestamp. For example, if a memory from 4 May 2022 mentions \"went to India last year,\" then the trip occurred in 2021. Use the Question Date only when the question is relative to the present and no memory timestamp applies.",
+    "6. Always convert relative time references to specific dates, months, or years in your final answer.",
+    "7. Do not confuse character names mentioned in memories with the actual users who created them.",
+    "8. The answer must be brief (under 5-6 words) and direct, with no extra description.",
+    "# APPROACH (Think step by step):",
+    "1. First, examine all memories that contain information related to the question.",
+    "2. Synthesize findings from multiple memories if a single entry is insufficient.",
+    "3. Examine timestamps and content carefully, looking for explicit dates, times, locations, or events.",
+    "4. If the answer requires calculation (e.g., converting relative time references), perform the calculation.",
+    "5. Formulate a precise, concise answer based on the evidence from the memories (and allowed world knowledge).",
+    "6. Double-check that your answer directly addresses the question asked and adheres to all instructions.",
+    "7. Ensure your final answer is specific and avoids vague time references.",
+    input.serializedPrompt,
     `Question: ${input.question}`,
     ...(input.questionDate?.trim() ? [`Question Date: ${input.questionDate.trim()}`] : []),
-    "Read the Context Pack carefully and understand the meaning of each fact and field:",
-    "- content / factText: the content of the fact and the primary evidence for answering the question.",
-    "- entity: the specific person, object, place, or concept involved in the fact. Do not treat different entities as the same merely because their names are similar.",
-    "- event: the event described by the fact and, when available, its status or related details.",
-    "- validTime: the time when the fact was true or the event occurred.",
-    "- evidenceTime: the time when the fact was recorded, observed, or stated.",
-    "- factSequence: the one-based extraction order of a fact within its source Session. A larger value means the fact appeared later in that same Session; values from different Sessions are not directly comparable.",
-    "- source / sourceMessageIds: where the fact came from. Use this to understand the provenance of the evidence and, when timestamps are available, its chronological context.",
-    "- relationship: the relationship between facts, entities, or events. Use it when reasoning across multiple facts.",
-    "- factId, memoryId, and other IDs: reference identifiers only, not factual content. Do not use them as the answer itself.",
-    "Prefer direct evidence about the required subject and action. Use related facts and paraphrases without inventing or overstating what happened; treat them only as supporting context.",
-    "When the question involves numbers, amounts, counts, dates, durations, averages, differences, or other calculations, use all relevant facts and calculate accurately.",
-    "Use the following general examples only to understand the reasoning method. Their entities, values, and answers are illustrative and are never evidence for the current question:",
-    "- Deduplicated sum: one Session says a repair cost $30 and new lights cost $20, while another Session repeats the same $20 lights purchase. Count the repeated purchase once: $30 + $20 = $50, not $70.",
-    "- Counting events in compound statements: one fact says the user attended dinners at Alex's place and at Blake's place, and another fact says the user attended dinner at Casey's place. These are three distinct attended dinners, even though two appear in one sentence.",
-    "- Counting distinct entities rather than actions: the user cleaned and serviced the same road bike, then planned to service a commuter bike. For a question asking how many bikes were serviced or planned for service, the answer is two bikes, not three actions.",
-    "- Subject and action-state filtering: if the question asks what the user has actually used, count only facts that state the user used, made, served, or otherwise completed the relevant action. Do not count ingredients that the assistant merely recommended, listed in a hypothetical recipe, or suggested for future experimentation. For example, if the user made cocktails with lime, orange, and lemon, while the assistant only suggested grapefruit and yuzu mixers, the count is three, not five.",
-    "- Difference and duration: if a taxi costs $70 and a train costs $15, the savings are $70 - $15 = $55. If total tenure is 4 years 2 months and the prior role lasted 2 years 9 months, convert to months before subtracting: 50 - 33 = 17 months = 1 year 5 months.",
-    "- Event-relative duration: if the user attended a baking class on March 20 and made a friend's birthday cake on April 10, then 'How many days ago did I attend the baking class when I made my friend's birthday cake?' uses the cake-making event as the reference point: April 10 - March 20 = 21 days, not the Question Date.",
-    "- Insufficient operands: if the taxi price is known but the bus price is not present in the Context Pack, the savings cannot be determined. Do not import outside prices or guess the missing operand.",
-    "For temporal reasoning, prefer validTime when it is available and consistent with the fact text. Otherwise, infer the event time from factText or sourceClaim together with that fact's evidenceTime. Resolve relative expressions such as \"today,\" \"yesterday,\" \"just got back,\" \"last week,\" and \"ago\" against the fact's evidenceTime, not the question date, and do not automatically treat evidenceTime as the event time.",
-    "For temporal reasoning, identify the events and their relationship before calculating. - For \"between A and B,\" use A and B as the temporal operands. - When \"when,\" \"by the time,\" \"at the time,\" or \"since\" makes B the reference event, calculate up to B, not the Question Date. - Use the Question Date only when the question is relative to the present and provides no other reference event.",
-    "For counts, list, justify, and deduplicate qualifying items first in your internal reasoning, then put only the concise result in the final response.",
-    "For an update, correction, replacement, latest-state, or current-state question, when facts concern the same entity and property within the same Session, prefer the fact with the larger factSequence unless explicit validTime, evidenceTime, or correction semantics show otherwise. Across different Sessions, determine recency from validTime, evidenceTime, and explicit relationships instead of comparing factSequence values, and treat the chronologically later applicable fact as the latest fact to prioritize when answering.",
-    "LoCoMo overrides (these override any conflicting instruction above):",
-    "CRITICAL - Absolute date conversion: when the evidence contains a relative time expression (for example \"last Saturday\", \"next month\", \"this summer\", \"yesterday\"), you MUST convert it into an absolute date before answering. Use the evidenceTime of the fact (or the Question Date only when the question itself is relative to the present) as the anchor, count the offset precisely (a week = 7 days), and output the resolved calendar date or month (for example, evidenceTime 25 May 2023 with \"the charity race last Saturday\" means the Saturday before 25 May, so answer \"20 May 2023\"; \"next month\" said in May 2023 means \"June 2023\"). Never answer with the relative expression itself; do not preserve the relative phrasing even when the source text only supports relative timing.",
-    "Partial-precision answers are acceptable: when the evidence supports the answer only at a coarser granularity (for example a month instead of an exact day), output that coarser answer (for example \"February 2023\") instead of refusing. A reasoned inference from pack facts counts as supported - only refuse when nothing in the pack relates to the question.",
-    "Refusal rule: refuse only when the Context Pack contains no evidence related to the question at all. If the pack contains related or partially covering evidence, always give the most likely short answer based on it instead of refusing. Reserve \"No information available\" strictly for questions whose topic is entirely absent from the pack. Never guess an entity, date, or fact that has no support in the pack.",
-    "Answer only based on information supported by the Context Pack.",
-    "OUTPUT FORMAT (strict, mandatory):",
-    "- Output ONLY the final answer itself: a name, date, number, or short phrase, usually under 12 words. Do not say anything else.",
-    "- Do NOT include explanations, reasoning steps, citations, fact references such as \"fact [1]\", or prefaces such as \"Based on the Context Pack\". This overrides the instruction to list, justify, or explain your reasoning in the response; do any such reasoning silently and output only the concise result.",
-    "- For date/time questions, give the most specific date the evidence supports, always written as \"day month-name year\" (for example \"19 January 2023\", \"February 2023\"). Never use ISO format such as \"2023-01-19\" and never use numeric-only dates.",
-    "- For yes/no or likely/unlikely questions, start with the verdict and add a brief reason only if needed (for example \"Likely no, she prefers reading\").",
-    "- For questions asking about multiple items, list them separated by commas.",
-    "- When the Context Pack does not contain enough evidence to answer, respond exactly: No information available.",
-    `Context Pack:\n${input.serializedPrompt}`
+    "Answer:"
   ].join("\n\n");
 }
 

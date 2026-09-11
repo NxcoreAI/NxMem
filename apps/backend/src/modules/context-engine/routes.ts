@@ -525,6 +525,7 @@ export function registerContextEngineRoutes(
     limit?: string;
     offset?: string;
     includeInactive?: string;
+    graphNeighborRecall?: string;
     referenceTime?: string;
     timezone?: string;
     locale?: string;
@@ -542,6 +543,7 @@ export function registerContextEngineRoutes(
         q,
         layer,
         includeInactive: request.query.includeInactive === "true",
+        graphNeighborRecall: request.query.graphNeighborRecall === "true",
         ...(request.query.sessionId ? { sessionId: request.query.sessionId } : {}),
         ...(request.query.taskId ? { taskId: request.query.taskId } : {}),
         requestId: request.query.requestId?.trim() || request.id,
@@ -599,6 +601,9 @@ export function registerContextEngineRoutes(
       if (typeof body.offset === "number") contextQuery.offset = body.offset;
       if (typeof body.includeInactive === "boolean") {
         contextQuery.includeInactive = body.includeInactive;
+      }
+      if (typeof body.graphNeighborRecall === "boolean") {
+        contextQuery.graphNeighborRecall = body.graphNeighborRecall;
       }
       const response = redactContextSearchResponse(await searchContext(repository, contextQuery));
 
