@@ -374,6 +374,12 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   protected exec(_sql: string, _params: Array<unknown> = []) {}
 
+  protected keywordCorpusVersion = 0;
+
+  getKeywordCorpusVersion(): number {
+    return this.keywordCorpusVersion;
+  }
+
   async commitConversationBatchIngestion(
     request: CommitConversationBatchIngestionRequest
   ): Promise<CommitConversationBatchIngestionResult> {
@@ -2216,6 +2222,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   async saveIndexEntry(entry: ContextIndexEntry) {
     replaceById(this.cache.indexEntries, entry, "indexId");
+    this.keywordCorpusVersion += 1;
     this.exec(
       `INSERT INTO context_index_entries (index_id, owner_id, owner_type, content, lifecycle_status, refreshed_at, token_count)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2348,6 +2355,10 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   getLongTermMemory(memoryId: string): LongTermMemory | undefined {
     return this.cache.longTermMemories.find((memory) => memory.memoryId === memoryId);
+  }
+
+  getLongTermMemoryByConsolidationKey(consolidationKey: string): LongTermMemory | undefined {
+    return this.cache.longTermMemories.find((memory) => memory.consolidationKey === consolidationKey);
   }
 
   getParsedSegmentsByIds(segmentIds: string[]): ParsedSegment[] {
@@ -2567,6 +2578,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   async deleteIndexEntry(indexId: string) {
     removeWhere(this.indexEntries, (item) => item.indexId === indexId);
+    this.keywordCorpusVersion += 1;
   }
 
   async deleteTextIndexEntry(indexId: string) {
@@ -3231,6 +3243,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     removeWhere(this.cache.llmDreamingTraces, (trace) => trace.sourceMemoryDataIds.some((memoryDataId) => deletedShortTermIds.includes(memoryDataId)) || trace.parsedMemories.some((memory) => deletedLongTermIds.includes(memory.memoryId)));
     removeWhere(this.cache.pipelineTasks, (task) => task.eventId === eventId);
     removeWhere(this.cache.indexEntries, (entry) => deletedFactIds.includes(entry.ownerId) || deletedShortTermIds.includes(entry.ownerId) || deletedLongTermIds.includes(entry.ownerId));
+    this.keywordCorpusVersion += 1;
     removeWhere(this.cache.textIndexEntries, (entry) => deletedFactIds.includes(entry.ownerId) || deletedShortTermIds.includes(entry.ownerId) || deletedLongTermIds.includes(entry.ownerId));
     removeWhere(this.cache.vectorIndexEntries, (entry) => deletedFactIds.includes(entry.ownerId) || deletedShortTermIds.includes(entry.ownerId) || deletedLongTermIds.includes(entry.ownerId));
     removeWhere(this.cache.graphMemoryNodes, (node) => deletedShortTermIds.includes(node.ownerId) || deletedLongTermIds.includes(node.ownerId));
@@ -3347,6 +3360,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     this.cache.llmDreamingTraces.length = 0;
     this.cache.pipelineTasks.length = 0;
     this.cache.indexEntries.length = 0;
+    this.keywordCorpusVersion += 1;
     this.cache.textIndexEntries.length = 0;
     this.cache.vectorIndexEntries.length = 0;
     this.cache.graphMemoryNodes.length = 0;
@@ -3394,6 +3408,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     this.cache.llmDreamingTraces.length = 0;
     this.cache.pipelineTasks.length = 0;
     this.cache.indexEntries.length = 0;
+    this.keywordCorpusVersion += 1;
     this.cache.textIndexEntries.length = 0;
     this.cache.vectorIndexEntries.length = 0;
     this.cache.graphMemoryNodes.length = 0;
@@ -3516,6 +3531,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     removeWhere(this.cache.llmDreamingTraces, (trace) => dreamingTraceIds.has(trace.traceId));
     removeWhere(this.cache.pipelineTasks, (task) => eventIds.has(task.eventId));
     removeWhere(this.cache.indexEntries, (entry) => ownerIds.has(entry.ownerId));
+    this.keywordCorpusVersion += 1;
     removeWhere(this.cache.textIndexEntries, (entry) => ownerIds.has(entry.ownerId));
     removeWhere(this.cache.vectorIndexEntries, (entry) => ownerIds.has(entry.ownerId));
     removeWhere(this.cache.graphMemoryNodes, (node) => ownerIds.has(node.ownerId));
@@ -7901,6 +7917,58 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     return row ? normalizeLongTermMemoryRow(normalizeRow(row)) : undefined;
   }
 
+  override getLongTermMemoryByConsolidationKey(consolidationKey: string): LongTermMemory | undefined {
+    const cached = super.getLongTermMemoryByConsolidationKey(consolidationKey);
+    if (cached) return cached;
+    const row = this.db
+      .prepare(`
+        SELECT
+          memory_id AS memoryId,
+          tenant_id AS tenantId,
+          principal_id AS principalId,
+          theory_class AS theoryClass,
+          memory_type AS memoryType,
+          content,
+          structured_facts AS structuredFacts,
+          fact_summary AS factSummary,
+          summary,
+          evidence_time_start AS evidenceTimeStart,
+          evidence_time_end AS evidenceTimeEnd,
+          evidence_time_confidence AS evidenceTimeConfidence,
+          valid_time_start AS validTimeStart,
+          valid_time_end AS validTimeEnd,
+          valid_time_confidence AS validTimeConfidence,
+          consolidation_key AS consolidationKey,
+          version,
+          previous_version_id AS previousVersionId,
+          consolidation_score AS consolidationScore,
+          consolidation_factors AS consolidationFactors,
+          policy_version AS policyVersion,
+          prompt_version AS promptVersion,
+          model,
+          created_at AS createdAt,
+          updated_at AS updatedAt,
+          last_maintained_at AS lastMaintainedAt,
+          confidence_level AS confidenceLevel,
+          recall_weight AS recallWeight,
+          retrieval_weight AS retrievalWeight,
+          user_retrieval_weight AS userRetrievalWeight,
+          solidify_reason AS solidifyReason,
+          source_refs AS sourceRefs,
+          source_memory_data_ids AS sourceMemoryDataIds,
+          source_fact_ids AS sourceFactIds,
+          entity_ids AS entityIds,
+          matched_rules AS matchedRules,
+          access_state AS accessState,
+          lifecycle_status AS lifecycleStatus
+        FROM long_term_memories
+        WHERE consolidation_key = ?
+        LIMIT 1
+      `)
+      .get(consolidationKey) as Record<string, unknown> | undefined;
+    return row ? normalizeLongTermMemoryRow(normalizeRow(row)) : undefined;
+  }
+
   override getGraphMemoryNode(ownerType: GraphMemoryOwnerType, ownerId: string): GraphMemoryNode | undefined {
     const cached = super.getGraphMemoryNode(ownerType, ownerId);
     if (cached) return cached;
@@ -8310,16 +8378,25 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
 
   override searchFactVector(queryVector: number[], options: FactIndexSearchQuery = {}): FactIndexSearchHit[] {
     if (!queryVector.length) return [];
-    const facts = new Map(this.getDebugSnapshot().facts.map((fact) => [fact.factId, fact]));
-    return this.db.prepare(`
-      SELECT owner_id AS factId, vector
-      FROM context_vector_index_entries
-      WHERE owner_type = 'fact'
-    `).all().flatMap((raw) => {
+    const rows = this.db.prepare(`
+      SELECT v.owner_id AS factId, v.vector AS vector, fact.access_state AS accessState
+      FROM context_vector_index_entries v
+      JOIN fact_items fact ON fact.fact_id = v.owner_id
+      WHERE v.owner_type = 'fact'
+        AND (? IS NULL OR fact.tenant_id = ?)
+        AND (? IS NULL OR fact.principal_id = ?)
+        AND (? = 1 OR fact.status IN ('active', 'conflicted'))
+    `).all(
+      options.tenantId ?? null,
+      options.tenantId ?? null,
+      options.principalId ?? null,
+      options.principalId ?? null,
+      options.includeInactive ? 1 : 0
+    );
+    return rows.flatMap((raw) => {
       const row = normalizeRow(raw as Record<string, unknown>);
       const factId = String(row.factId ?? "");
-      const fact = facts.get(factId);
-      if (!fact || !factMatchesIndexQuery(fact, options)) return [];
+      if (row.accessState === "permission-invalid") return [];
       const vector = parseJsonArray(row.vector).map(Number);
       return [{ factId, score: cosine(queryVector, vector) }];
     }).filter((hit) => hit.score > 0)

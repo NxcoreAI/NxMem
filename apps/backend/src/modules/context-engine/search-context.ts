@@ -37,12 +37,23 @@ import {
 } from "./temporal-rollout.js";
 import { temporalDropReasonErrorCode, uniqueTemporalErrorCodes } from "./temporal-observability.js";
 import {
-  buildKeywordCorpusStats,
+  createKeywordCorpusStatsCache,
   scoreKeywordMatch,
   type KeywordCorpusStats
 } from "./keyword-scoring.js";
 import { tokenizeSearchText } from "./search-tokenizer.js";
 import { createCrossEncoderReranker, type CrossEncoderReranker } from "./cross-encoder-reranker.js";
+
+const keywordCorpusStatsCaches = new WeakMap<object, ReturnType<typeof createKeywordCorpusStatsCache>>();
+
+function loadKeywordCorpusStats(repository: ContextEngineRepository, queryTokens: string[]): Promise<KeywordCorpusStats> {
+  let getStats = keywordCorpusStatsCaches.get(repository);
+  if (!getStats) {
+    getStats = createKeywordCorpusStatsCache();
+    keywordCorpusStatsCaches.set(repository, getStats);
+  }
+  return getStats(repository, queryTokens);
+}
 
 const searchMaterializationConcurrency = 8;
 
@@ -514,10 +525,7 @@ async function retrieveMemoryCandidates(
   factContextLoader: FactContextLoader
 ): Promise<{ base: CandidateResult[]; supplements: CandidateResult[] }> {
   const queryVector = normalizedQuery ? await createQueryVector(normalizedQuery, embeddingClient) : [];
-  const keywordCorpusStats = buildKeywordCorpusStats(
-    await repository.listKeywordCorpusContents(),
-    queryTokens
-  );
+  const keywordCorpusStats = await loadKeywordCorpusStats(repository, queryTokens);
   const [ftsRanked, vectorRanked, temporalRanked] = await Promise.all([
     rankByGraphText(repository, queryTokens, query, sourceScope, resolvedTemporal),
     rankByGraphVector(repository, queryVector, query, sourceScope, resolvedTemporal),
@@ -654,7 +662,7 @@ async function retrieveFactCandidates(
   const merged = mergeFactHitsByRrf(textHits, vectorHits);
   const facts = await repository.getFactItemsByIds(merged.map((hit) => hit.factId));
   const factById = new Map(facts.map((fact) => [fact.factId, fact]));
-  const keywordCorpusStats = buildKeywordCorpusStats(await repository.listKeywordCorpusContents(), queryTokens);
+  const keywordCorpusStats = await loadKeywordCorpusStats(repository, queryTokens);
   const coarseResults = merged.flatMap((hit) => {
     const fact = factById.get(hit.factId);
     if (!fact) return [];

@@ -344,6 +344,8 @@ export interface ContextEngineRepository extends ConversationIngestionRepository
   getShortTermMemory(memoryDataId: string): MaybePromise<ShortTermMemory | undefined>;
   getShortTermMemoriesByIds(memoryDataIds: string[]): MaybePromise<ShortTermMemory[]>;
   getLongTermMemory(memoryId: string): MaybePromise<LongTermMemory | undefined>;
+  getLongTermMemoryByConsolidationKey(consolidationKey: string): MaybePromise<LongTermMemory | undefined>;
+  getKeywordCorpusVersion(): number;
   getParsedSegmentsByIds(segmentIds: string[]): MaybePromise<ParsedSegment[]>;
   getMemoryEventsByIds(eventIds: string[]): MaybePromise<MemoryEvent[]>;
   findEvidenceCandidates(query: EvidenceSearchQuery): MaybePromise<EvidenceSearchCandidate[]>;

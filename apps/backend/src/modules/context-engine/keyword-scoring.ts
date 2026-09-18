@@ -123,6 +123,48 @@ function buildSynonymMap(groups: ReadonlyArray<readonly string[]>): ReadonlyMap<
   return result;
 }
 
+export interface KeywordCorpusStatsProvider {
+  getKeywordCorpusVersion(): number;
+  listKeywordCorpusContents(): string[] | Promise<string[]>;
+}
+
+// 语料未变化时复用已算过的 token DF，避免每次查询全量扫描语料
+export function createKeywordCorpusStatsCache() {
+  let version = -1;
+  let documentCount = 0;
+  const documentFrequency = new Map<string, number>();
+
+  return async function getKeywordCorpusStats(
+    provider: KeywordCorpusStatsProvider,
+    queryTokens: string[]
+  ): Promise<KeywordCorpusStats> {
+    const corpusVersion = provider.getKeywordCorpusVersion();
+    if (corpusVersion !== version) {
+      documentFrequency.clear();
+      documentCount = 0;
+      version = corpusVersion;
+    }
+    const tokens = uniqueTokens(queryTokens);
+    const missing = tokens.filter((token) => !documentFrequency.has(token));
+    if (missing.length) {
+      const contents = await provider.listKeywordCorpusContents();
+      documentCount = contents.length;
+      for (const content of contents) {
+        const normalized = normalizeKeywordText(content);
+        for (const token of missing) {
+          if (hasExactToken(normalized, token)) {
+            documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+          }
+        }
+      }
+    }
+    return {
+      documentCount,
+      documentFrequency: new Map(tokens.map((token) => [token, documentFrequency.get(token) ?? 0]))
+    };
+  };
+}
+
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
 }
