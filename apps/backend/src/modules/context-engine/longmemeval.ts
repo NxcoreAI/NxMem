@@ -162,6 +162,7 @@ export const longMemEvalAnswerContextTokenBudget = 20_000;
 export const longMemEvalAnswerEvidenceLimit = 60;
 const longMemEvalAnswerBaselineCandidateCount = 12;
 const longMemEvalAnswerCompletionCandidateCount = longMemEvalAnswerEvidenceLimit - longMemEvalAnswerBaselineCandidateCount;
+const longMemEvalAnswerDisableReasoning = process.env.LONGMEMEVAL_ANSWER_DISABLE_REASONING === "true";
 const longMemEvalContextLimiters = new WeakMap<ContextEngineRepository, AsyncConcurrencyLimiter>();
 
 interface AsyncConcurrencyLimiter {
@@ -3220,7 +3221,7 @@ async function generateHypothesis(
     sampleCount: input?.sampleCount,
     endpoint: `${normalizeBaseUrl(llm?.baseUrl ?? getContextEngineConfig().llm.baseUrl)}/chat/completions`,
     model: llm?.model ?? getContextEngineConfig().llm.model,
-    disableReasoning: false,
+    disableReasoning: longMemEvalAnswerDisableReasoning,
     contextSummaryPreview: input?.contextSummary ? limitLongMemEvalPreview(input.contextSummary, longMemEvalLogPreviewCharLimit) : undefined,
     ...summarizeAnswerContextForLog(answerContext),
     answerRankedSessionIds: rankedSessionIds.slice(0, 10),
@@ -3232,7 +3233,7 @@ async function generateHypothesis(
     model: llm?.model ?? getContextEngineConfig().llm.model,
     ...(llm?.apiKey || getContextEngineConfig().llm.apiKey ? { apiKey: llm?.apiKey ?? getContextEngineConfig().llm.apiKey } : {}),
     prompt,
-    disableReasoning: false,
+    disableReasoning: longMemEvalAnswerDisableReasoning,
     logger: input?.logger,
     ...(input?.signal ? { signal: input.signal } : {}),
     logContext: {
@@ -4945,6 +4946,7 @@ async function callLongMemEvalChatCompletionText(
     observer?: OpenAiCompatibleRequestObserver;
     signal?: AbortSignal;
     operation?: string;
+    disableReasoning?: boolean;
   },
   messages: Array<{ role: string; content: string }>
 ): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
@@ -4956,7 +4958,10 @@ async function callLongMemEvalChatCompletionText(
     body: {
       model: input.model,
       messages,
-      temperature: 0
+      temperature: 0,
+      // dashscope qwen3 系列通过 enable_thinking 控制思考模式，非流式下默认即关闭，
+      // 显式传 false 以防默认行为变化
+      ...(input.disableReasoning ? { enable_thinking: false } : {})
     },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
