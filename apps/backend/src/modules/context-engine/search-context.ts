@@ -1572,13 +1572,14 @@ function matchMemoryTemporal(
   if (resolved.basis === "evidence" || resolved.basis === "valid") {
     const start = temporalAxisStart(memory, resolved.basis);
     if (!start) return resolved.basis === "valid" ? {} : { dropReason: "temporal_metadata_missing" };
-    const matched = memoryMatchesTemporalRange(memory, {
-      ...resolved.range,
-      basis: resolved.basis
-    });
-    return matched
-      ? { matchedBasis: resolved.basis }
-      : { dropReason: `outside_${resolved.basis}_time_range` };
+    if (memoryMatchesTemporalRange(memory, { ...resolved.range, basis: resolved.basis })) {
+      return { matchedBasis: resolved.basis };
+    }
+    if (resolved.basis === "evidence" && (memory.validTime || memory.validTimeStart)
+      && memoryMatchesTemporalRange(memory, { ...resolved.range, basis: "valid" })) {
+      return { matchedBasis: "valid" as const };
+    }
+    return { dropReason: `outside_${resolved.basis}_time_range` };
   }
 
   const validPresent = Boolean(memory.validTime || memory.validTimeStart);
@@ -1600,9 +1601,14 @@ function matchTemporalMetadata(
   if (resolved.basis === "evidence" || resolved.basis === "valid") {
     const start = temporalAxisStart(metadata, resolved.basis);
     if (!start) return resolved.basis === "valid" ? {} : { dropReason: "temporal_metadata_missing" };
-    return temporalAxisIntersects(metadata, resolved.range, resolved.basis)
-      ? { matchedBasis: resolved.basis }
-      : { dropReason: `outside_${resolved.basis}_time_range` };
+    if (temporalAxisIntersects(metadata, resolved.range, resolved.basis)) {
+      return { matchedBasis: resolved.basis };
+    }
+    if (resolved.basis === "evidence" && (metadata.validTime || metadata.validTimeStart)
+      && temporalAxisIntersects(metadata, resolved.range, "valid")) {
+      return { matchedBasis: "valid" };
+    }
+    return { dropReason: `outside_${resolved.basis}_time_range` };
   }
 
   const validPresent = Boolean(metadata.validTime || metadata.validTimeStart);
@@ -1615,7 +1621,7 @@ function matchTemporalMetadata(
 
 function isAmbiguousRelativeTemporalQuery(text: string) {
   const normalized = text.normalize("NFKC").toLocaleLowerCase();
-  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
+  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b|\b(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
 }
 
 function temporalAxisIntersects(

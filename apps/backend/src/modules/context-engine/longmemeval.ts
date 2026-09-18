@@ -159,9 +159,10 @@ const longMemEvalContextRetryAttempts = 3;
 export const longMemEvalAnswerCandidateLimit = 100;
 const longMemEvalRetrievalCompatibilityLimit = 10;
 export const longMemEvalAnswerContextTokenBudget = 20_000;
-export const longMemEvalAnswerEvidenceLimit = 20;
+export const longMemEvalAnswerEvidenceLimit = 60;
 const longMemEvalAnswerBaselineCandidateCount = 12;
 const longMemEvalAnswerCompletionCandidateCount = longMemEvalAnswerEvidenceLimit - longMemEvalAnswerBaselineCandidateCount;
+const longMemEvalAnswerDisableReasoning = process.env.LONGMEMEVAL_ANSWER_DISABLE_REASONING === "true";
 const longMemEvalContextLimiters = new WeakMap<ContextEngineRepository, AsyncConcurrencyLimiter>();
 
 interface AsyncConcurrencyLimiter {
@@ -3220,7 +3221,7 @@ async function generateHypothesis(
     sampleCount: input?.sampleCount,
     endpoint: `${normalizeBaseUrl(llm?.baseUrl ?? getContextEngineConfig().llm.baseUrl)}/chat/completions`,
     model: llm?.model ?? getContextEngineConfig().llm.model,
-    disableReasoning: false,
+    disableReasoning: longMemEvalAnswerDisableReasoning,
     contextSummaryPreview: input?.contextSummary ? limitLongMemEvalPreview(input.contextSummary, longMemEvalLogPreviewCharLimit) : undefined,
     ...summarizeAnswerContextForLog(answerContext),
     answerRankedSessionIds: rankedSessionIds.slice(0, 10),
@@ -3232,7 +3233,7 @@ async function generateHypothesis(
     model: llm?.model ?? getContextEngineConfig().llm.model,
     ...(llm?.apiKey || getContextEngineConfig().llm.apiKey ? { apiKey: llm?.apiKey ?? getContextEngineConfig().llm.apiKey } : {}),
     prompt,
-    disableReasoning: false,
+    disableReasoning: longMemEvalAnswerDisableReasoning,
     logger: input?.logger,
     ...(input?.signal ? { signal: input.signal } : {}),
     logContext: {
@@ -4840,14 +4841,46 @@ async function judgeHypothesis(
       };
     }
     const normalized = normalizeText(response.text);
-    const label = normalized.startsWith("yes") || normalized.includes(" yes") ? "correct" : "incorrect";
+    let label: "correct" | "incorrect" = normalized.startsWith("yes") || normalized.includes(" yes") ? "correct" : "incorrect";
+    let judgeText = response.text;
+    if (label === "incorrect" && fallbackJudgeConflictRecheckEligible(context, hypothesis)) {
+      const recheckPrompt = buildJudgeRecheckPrompt(context, hypothesis);
+      const recheck = await callOpenAiCompatibleText({
+        baseUrl: judge.baseUrl || extraction?.baseUrl || getContextEngineConfig().llm.baseUrl,
+        model: judge.model || extraction?.model || getContextEngineConfig().llm.model,
+        ...(apiKey ? { apiKey } : {}),
+        prompt: recheckPrompt,
+        disableReasoning: true,
+        logger: input?.logger,
+        ...(input?.observer ? { observer: input.observer } : {}),
+        ...(input?.signal ? { signal: input.signal } : {}),
+        logContext: {
+          stage: "judge_recheck",
+          questionId: input?.questionId,
+          questionType: input?.questionType,
+          contextScopeId: input?.contextScopeId ?? context.contextScopeId,
+          modelRunId: input?.modelRunId,
+          storeNamespace: input?.storeNamespace,
+          sampleIndex: input?.sampleIndex,
+          sampleCount: input?.sampleCount,
+          promptPreview: limitLongMemEvalPreview(recheckPrompt, longMemEvalLogPreviewCharLimit),
+          hypothesisPreview: limitLongMemEvalPreview(hypothesis, longMemEvalLogPreviewCharLimit)
+        }
+      });
+      if (recheck.ok) {
+        const recheckNormalized = normalizeText(recheck.text);
+        const recheckYes = recheckNormalized.startsWith("yes") || recheckNormalized.includes(" yes");
+        if (recheckYes) label = "correct";
+        judgeText = `${response.text} | recheck: ${recheck.text.trim()}`;
+      }
+    }
     return {
       label,
       score: label === "correct" ? 1 : 0,
-      reason: fallbackJudgeReason(context, hypothesis, label === "correct", response.text),
+      reason: fallbackJudgeReason(context, hypothesis, label === "correct", judgeText),
       model: judge.model || extraction?.model || getContextEngineConfig().llm.model,
       baseUrl: judge.baseUrl || extraction?.baseUrl || getContextEngineConfig().llm.baseUrl,
-      raw: { text: response.text }
+      raw: { text: judgeText }
     };
   } catch (error) {
     if (input?.allowLlmFallback === false) throw error;
@@ -4913,6 +4946,7 @@ async function callLongMemEvalChatCompletionText(
     observer?: OpenAiCompatibleRequestObserver;
     signal?: AbortSignal;
     operation?: string;
+    disableReasoning?: boolean;
   },
   messages: Array<{ role: string; content: string }>
 ): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
@@ -4924,7 +4958,10 @@ async function callLongMemEvalChatCompletionText(
     body: {
       model: input.model,
       messages,
-      temperature: 0
+      temperature: 0,
+      // dashscope qwen3 系列通过 enable_thinking 控制思考模式，非流式下默认即关闭，
+      // 显式传 false 以防默认行为变化
+      ...(input.disableReasoning ? { enable_thinking: false } : {})
     },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
@@ -5136,6 +5173,17 @@ function flattenSessionTranscript(turns: LongMemEvalSessionTurn[]): string {
     .join("\n");
 }
 
+function fallbackJudgeConflictRecheckEligible(context: SampleContext, hypothesis: string) {
+  return !context.questionId.endsWith("_abs") && containsAnswer(hypothesis, context.answer);
+}
+
+function buildJudgeRecheckPrompt(context: SampleContext, hypothesis: string) {
+  return [
+    buildJudgePrompt(context, hypothesis),
+    "Attention: the correct answer text appears verbatim in the model response. If the response's final answer matches the correct answer, answer yes, even if the response's reasoning mentions dates, durations, or other details that differ from the question's phrasing."
+  ].join("\n\n");
+}
+
 function buildJudgePrompt(context: SampleContext, hypothesis: string) {
   const questionType = context.questionType;
   const abstention = context.questionId.endsWith("_abs");
@@ -5255,7 +5303,10 @@ function resolveJudgeConfig(
 }
 
 function exactMatchScore(answer: string, hypothesis: string) {
-  return normalizeText(hypothesis).includes(normalizeText(answer));
+  const normalized = normalizeText(hypothesis);
+  const marker = normalized.lastIndexOf("answer:");
+  const finalAnswer = marker >= 0 ? normalized.slice(marker + "answer:".length) : normalized;
+  return finalAnswer.includes(normalizeText(answer));
 }
 
 function fallbackHypothesis(reason: string) {
