@@ -81,6 +81,22 @@ test("LongMemEval resolves weekend anchors as explicit intervals", () => {
   assert.equal(temporal.validTimeEnd, "2023-10-09T00:00:00.000Z");
 });
 
+test("multi-weekend anchors resolve to the Nth weekend before the evidence date", () => {
+  // 2023-07-17 是周一：一个周末前 = 7/15-16，两个周末前 = 7/8-9
+  const temporal = resolveLongMemEvalTimeAnchor({
+    evidenceTime: "2023-07-17T14:31:00.000Z",
+    timeAnchor: "two weekends ago"
+  });
+  assert.equal(temporal.validTimeStart, "2023-07-08T00:00:00.000Z");
+  assert.equal(temporal.validTimeEnd, "2023-07-10T00:00:00.000Z");
+
+  const prior = resolveLongMemEvalTimeAnchor({
+    evidenceTime: "2023-07-17T14:31:00.000Z",
+    timeAnchor: "two weekends prior"
+  });
+  assert.equal(prior.validTimeStart, "2023-07-08T00:00:00.000Z");
+});
+
 test("LongMemEval keeps present-perfect durations as ranges and vague anchors unresolved", () => {
   const duration = resolveLongMemEvalTimeAnchor({
     evidenceTime,

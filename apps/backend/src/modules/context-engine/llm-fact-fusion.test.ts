@@ -572,6 +572,81 @@ test("createFactsWithLlmFusion requests a provider-compatible token budget with 
   }
 });
 
+test("createFactsWithLlmFusion normalizes locomo fact times and backfills source_time", async () => {
+  const repository = new InMemoryContextEngineRepository();
+  const event: MemoryEvent = {
+    eventId: `event_${randomUUID()}`,
+    eventType: "locomo_conversation_session",
+    eventDescription: "session",
+    eventTime: "2023-07-17T14:31:00.000Z",
+    sourceApp: "locomo-native-evaluation",
+    sourceId: "conv-26:session_9",
+    permissionSnapshot: {
+      snapshotId: `ps_${randomUUID()}`,
+      tenantId: "tenant",
+      principalId: "principal",
+      sourceAclVersion: "v1",
+      visibility: "private"
+    },
+    multimodalData: [
+      {
+        itemId: "item1",
+        type: "text",
+        format: "plain",
+        content: "I had a quiet weekend after we went camping with my fam two weekends ago.",
+        ref: "item1",
+        timeBasis: "source_time",
+        timeConfidence: "high"
+      },
+      {
+        itemId: "item2",
+        type: "text",
+        format: "plain",
+        content: "I just launched an ad campaign for my clothing store.",
+        ref: "item2",
+        timeBasis: "source_time",
+        timeConfidence: "high"
+      }
+    ],
+    sourceRefs: [{ sourceRefId: "src1", sourceType: "locomo_utterance", sourceId: "D9:1" }]
+  };
+
+  const segments: ParsedSegment[] = event.multimodalData.map((item) => ({
+    segmentId: `seg_${event.eventId}_${item.itemId}`,
+    eventId: event.eventId,
+    modality: item.type,
+    content: multimodalContentToText(item.content),
+    status: "parsed",
+    confidence: "medium"
+  }));
+
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      facts: [
+        { factText: "Melanie went camping with her family two weekends ago.", timeAnchor: "two weekends ago", linkedSegmentIds: [segments[0]!.segmentId] },
+        { factText: "Gina launched an ad campaign for her clothing store.", linkedSegmentIds: [segments[1]!.segmentId] }
+      ]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const result = await createFactsWithLlmFusion(repository, event, segments, {
+      apiKey: "test-key",
+      baseUrl: "http://localhost:1234",
+      model: "test-model"
+    });
+
+    const camping = result.facts.find((fact) => fact.factText.includes("camping"));
+    assert.equal(camping?.validTimeStart, "2023-07-08T00:00:00.000Z");
+    assert.equal(camping?.validTimeEnd, "2023-07-10T00:00:00.000Z");
+    assert.equal(camping?.validTimeBasis, "event_relative");
+
+    const campaign = result.facts.find((fact) => fact.factText.includes("ad campaign"));
+    assert.equal(campaign?.validTime, "2023-07-17T14:31:00.000Z");
+    assert.equal(campaign?.validTimeBasis, "source_time");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createFactsWithLlmFusion splits oversized evidence into multiple LLM requests", async () => {
   const repository = new InMemoryContextEngineRepository();
   const event: MemoryEvent = {
