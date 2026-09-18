@@ -37,12 +37,23 @@ import {
 } from "./temporal-rollout.js";
 import { temporalDropReasonErrorCode, uniqueTemporalErrorCodes } from "./temporal-observability.js";
 import {
-  buildKeywordCorpusStats,
+  createKeywordCorpusStatsCache,
   scoreKeywordMatch,
   type KeywordCorpusStats
 } from "./keyword-scoring.js";
 import { tokenizeSearchText } from "./search-tokenizer.js";
 import { createCrossEncoderReranker, type CrossEncoderReranker } from "./cross-encoder-reranker.js";
+
+const keywordCorpusStatsCaches = new WeakMap<object, ReturnType<typeof createKeywordCorpusStatsCache>>();
+
+function loadKeywordCorpusStats(repository: ContextEngineRepository, queryTokens: string[]): Promise<KeywordCorpusStats> {
+  let getStats = keywordCorpusStatsCaches.get(repository);
+  if (!getStats) {
+    getStats = createKeywordCorpusStatsCache();
+    keywordCorpusStatsCaches.set(repository, getStats);
+  }
+  return getStats(repository, queryTokens);
+}
 
 const searchMaterializationConcurrency = 8;
 
@@ -514,10 +525,7 @@ async function retrieveMemoryCandidates(
   factContextLoader: FactContextLoader
 ): Promise<{ base: CandidateResult[]; supplements: CandidateResult[] }> {
   const queryVector = normalizedQuery ? await createQueryVector(normalizedQuery, embeddingClient) : [];
-  const keywordCorpusStats = buildKeywordCorpusStats(
-    await repository.listKeywordCorpusContents(),
-    queryTokens
-  );
+  const keywordCorpusStats = await loadKeywordCorpusStats(repository, queryTokens);
   const [ftsRanked, vectorRanked, temporalRanked] = await Promise.all([
     rankByGraphText(repository, queryTokens, query, sourceScope, resolvedTemporal),
     rankByGraphVector(repository, queryVector, query, sourceScope, resolvedTemporal),
@@ -654,7 +662,7 @@ async function retrieveFactCandidates(
   const merged = mergeFactHitsByRrf(textHits, vectorHits);
   const facts = await repository.getFactItemsByIds(merged.map((hit) => hit.factId));
   const factById = new Map(facts.map((fact) => [fact.factId, fact]));
-  const keywordCorpusStats = buildKeywordCorpusStats(await repository.listKeywordCorpusContents(), queryTokens);
+  const keywordCorpusStats = await loadKeywordCorpusStats(repository, queryTokens);
   const coarseResults = merged.flatMap((hit) => {
     const fact = factById.get(hit.factId);
     if (!fact) return [];
@@ -1564,13 +1572,14 @@ function matchMemoryTemporal(
   if (resolved.basis === "evidence" || resolved.basis === "valid") {
     const start = temporalAxisStart(memory, resolved.basis);
     if (!start) return resolved.basis === "valid" ? {} : { dropReason: "temporal_metadata_missing" };
-    const matched = memoryMatchesTemporalRange(memory, {
-      ...resolved.range,
-      basis: resolved.basis
-    });
-    return matched
-      ? { matchedBasis: resolved.basis }
-      : { dropReason: `outside_${resolved.basis}_time_range` };
+    if (memoryMatchesTemporalRange(memory, { ...resolved.range, basis: resolved.basis })) {
+      return { matchedBasis: resolved.basis };
+    }
+    if (resolved.basis === "evidence" && (memory.validTime || memory.validTimeStart)
+      && memoryMatchesTemporalRange(memory, { ...resolved.range, basis: "valid" })) {
+      return { matchedBasis: "valid" as const };
+    }
+    return { dropReason: `outside_${resolved.basis}_time_range` };
   }
 
   const validPresent = Boolean(memory.validTime || memory.validTimeStart);
@@ -1592,9 +1601,14 @@ function matchTemporalMetadata(
   if (resolved.basis === "evidence" || resolved.basis === "valid") {
     const start = temporalAxisStart(metadata, resolved.basis);
     if (!start) return resolved.basis === "valid" ? {} : { dropReason: "temporal_metadata_missing" };
-    return temporalAxisIntersects(metadata, resolved.range, resolved.basis)
-      ? { matchedBasis: resolved.basis }
-      : { dropReason: `outside_${resolved.basis}_time_range` };
+    if (temporalAxisIntersects(metadata, resolved.range, resolved.basis)) {
+      return { matchedBasis: resolved.basis };
+    }
+    if (resolved.basis === "evidence" && (metadata.validTime || metadata.validTimeStart)
+      && temporalAxisIntersects(metadata, resolved.range, "valid")) {
+      return { matchedBasis: "valid" };
+    }
+    return { dropReason: `outside_${resolved.basis}_time_range` };
   }
 
   const validPresent = Boolean(metadata.validTime || metadata.validTimeStart);
@@ -1607,7 +1621,7 @@ function matchTemporalMetadata(
 
 function isAmbiguousRelativeTemporalQuery(text: string) {
   const normalized = text.normalize("NFKC").toLocaleLowerCase();
-  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
+  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b|\b(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
 }
 
 function temporalAxisIntersects(

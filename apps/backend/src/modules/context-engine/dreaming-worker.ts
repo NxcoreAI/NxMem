@@ -356,9 +356,7 @@ export async function commitSingleDreamingResult(
         input.run.policyVersion,
         input.candidate.stmVersion
       );
-      const existingCommitted = repository.getDebugSnapshot().longTermMemories.find((memory) =>
-        memory.consolidationKey === consolidationKey
-      );
+      const existingCommitted = await repository.getLongTermMemoryByConsolidationKey(consolidationKey);
       const operation = input.result.ltmOperation;
       const target = operation?.targetLtmId
         ? await repository.getLongTermMemory(operation.targetLtmId)
