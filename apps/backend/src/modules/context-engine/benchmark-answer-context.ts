@@ -9,6 +9,10 @@ import {
   type ContextSearchResult,
   type ScoreBreakdown
 } from "./search-context.js";
+import {
+  collectStandingAffectiveStmMemories,
+  standingShortTermSearchResult
+} from "./standing-affective.js";
 import { estimateContextTokens } from "./token-estimator.js";
 
 export const BENCHMARK_ANSWER_CANDIDATE_LIMIT = 100;
@@ -45,6 +49,8 @@ export interface BenchmarkAnswerContextInput {
   memoryReranker?: CrossEncoderReranker | false;
   factReranker?: CrossEncoderReranker | false;
   resolveSessionId?: (source: SourceRef) => string | undefined;
+  /** 双脑区：注入 scope 内当前偏好/反馈类 STM 作为常驻证据，默认开启。 */
+  standingAffectiveInjection?: boolean;
 }
 
 export interface BenchmarkAnswerEvidenceCandidate {
@@ -111,12 +117,18 @@ export async function buildBenchmarkAnswerContext(
     .filter((item) => allowed.has(item.layer))
     .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
     .slice(0, candidateLimit);
-  const built = await buildCandidates(repository, input, results);
+  const standingMemories = input.standingAffectiveInjection === false || !allowed.has("stm")
+    ? []
+    : await collectStandingAffectiveStmMemories(repository, input, new Set(results.map((result) => result.id)));
+  const standingResults = standingMemories.map(standingShortTermSearchResult);
+  const built = await buildCandidates(repository, input, [...standingResults, ...results]);
+  const standingItemIds = new Set(standingResults.map((result) => result.id));
   const selection = selectBenchmarkAnswerEvidenceWithinBudget({
     question: input.question,
     questionType: input.questionType ?? "multi-session",
     ...((input.displayReferenceTime ?? input.referenceTime) ? { referenceTime: input.displayReferenceTime ?? input.referenceTime } : {}),
     candidates: built,
+    ...(standingItemIds.size ? { standingItemIds } : {}),
     tokenBudget,
     evidenceLimit
   });
@@ -209,6 +221,8 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
   candidates: BenchmarkAnswerEvidenceCandidate[];
   tokenBudget: number;
   evidenceLimit?: number;
+  /** 双脑区：standing 注入的条目不参与相关度竞争，保位排在最前。 */
+  standingItemIds?: Set<string>;
 }) {
   const evidenceLimit = clamp(input.evidenceLimit, BENCHMARK_ANSWER_EVIDENCE_LIMIT, 1, 100);
   const rejected: BenchmarkAnswerEvidenceRejection[] = [];
@@ -224,9 +238,15 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
     rejected.push(rejection(duplicate, "duplicate"));
     if (keepCandidate) deduped[existingIndex] = candidate;
   }
-  const ranked = deduped.slice().sort(compareCandidates);
+  const standing = input.standingItemIds
+    ? deduped.filter((candidate) => input.standingItemIds!.has(candidate.item.id))
+    : [];
+  const ranked = deduped
+    .filter((candidate) => !input.standingItemIds?.has(candidate.item.id))
+    .slice().sort(compareCandidates);
   const baseline = Math.min(baselineCandidateCount, evidenceLimit);
-  const considered = ranked.slice(0, baseline).concat(ranked.slice(baseline, evidenceLimit));
+  const rankedQuota = Math.max(baseline, evidenceLimit - standing.length);
+  const considered = [...standing, ...ranked.slice(0, baseline), ...ranked.slice(baseline, rankedQuota)];
   let usedTokens = estimateContextTokens(renderHeader(input.questionType, input.question, input.referenceTime));
   const selectedCandidates: BenchmarkAnswerEvidenceCandidate[] = [];
   for (const candidate of considered) {
