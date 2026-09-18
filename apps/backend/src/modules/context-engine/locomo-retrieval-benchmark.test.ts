@@ -14,6 +14,7 @@ import { createDeterministicTestEmbeddingClient } from "./embedding.js";
 import { refreshLongTermMemoryIndex } from "./indexing.js";
 import { InMemoryContextEngineRepository } from "./persistence/memory-repository.js";
 import { parseLocomoRetrievalArgs } from "./locomo-retrieval-benchmark-cli.js";
+import { longMemEvalAnswerEvidenceLimit } from "./longmemeval.js";
 
 test("LoCoMo CLI defaults to STM/LTM retrieval with memory reranking", () => {
   const defaults = parseLocomoRetrievalArgs(["node", "locomo", "evaluate"]);
@@ -219,7 +220,7 @@ test("LoCoMo evaluation ranks gold Facts through returned STM and LTM", async ()
   assert.equal(report.metrics.all[1]?.recallAtK, 1);
   assert.equal((report.metrics.stm[1]?.recallAtK ?? 0) + (report.metrics.ltm[1]?.recallAtK ?? 0), 1);
   assert.equal(report.cases[0]?.candidates.some((candidate) => candidate.layer === "fact"), false);
-  assert.equal(report.selection.evidenceLimit, 20);
+  assert.equal(report.selection.evidenceLimit, longMemEvalAnswerEvidenceLimit);
   assert.equal(report.cases[0]?.selection.selectedCandidates.length, 1);
   assert.equal(report.cases[0]?.selection.selectedCandidates[0]?.matchedGoldFactIds[0], dataset.facts[0]?.goldFactId);
   assert.equal(report.cases[0]?.selection.selectedCandidates[0]?.retrievalRank, 1);
