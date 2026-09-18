@@ -302,6 +302,22 @@ function resolveRelativeWeekday(text: string, evidenceTime: string) {
 }
 
 function resolveRelativeWeekend(text: string, evidenceTime: string) {
+  // "two weekends ago / before / prior"：最近过去的周六再往前 (N-1) 周
+  const multi = text.match(/\b(an?|one|two|three|four|five|six|\d+)\s+weekends?\s+(?:ago|earlier|before|prior)\b/iu);
+  if (multi?.[1]) {
+    const count = weekendCount(multi[1]);
+    if (count !== undefined && count >= 1) {
+      const reference = new Date(evidenceTime);
+      const day = reference.getUTCDay();
+      const lastSaturdayDelta = day === 0 ? -8 : -day - 1;
+      const start = new Date(Date.UTC(
+        reference.getUTCFullYear(), reference.getUTCMonth(), reference.getUTCDate() + lastSaturdayDelta - (count - 1) * 7
+      ));
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 2);
+      return { validTimeStart: start.toISOString(), validTimeEnd: end.toISOString() };
+    }
+  }
   const match = text.match(/\b(last|this|next)\s+weekend\b/iu);
   if (!match?.[1]) return undefined;
   const reference = new Date(evidenceTime);
@@ -418,6 +434,14 @@ export function longMemEvalFactTimelineTime(
 function normalizeTimestamp(value: string) {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function weekendCount(value: string) {
+  const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+  const word = words[value.toLocaleLowerCase()];
+  if (word !== undefined) return word;
+  const digit = Number(value);
+  return Number.isInteger(digit) && digit >= 1 && digit <= 10 ? digit : undefined;
 }
 
 function containsVagueRelativeTime(text: string) {

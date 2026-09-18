@@ -479,11 +479,9 @@ function assertAllowedLayers(items: Array<{ layer: string; id: string }>, locati
 }
 
 // LoCoMo-specific answer prompt, maintained independently from the LongMemEval prompt.
-// locomo-answer-prompt-v7: a concise, instruction-first template ported from the reference
-// answer prompt ("You are a knowledgeable and helpful AI assistant ... Answer:"), replacing
-// the earlier prescriptive v6 template and its worked calculation examples. It keeps the
-// LoCoMo-specific relative-time → absolute-date rule, the Question Date line, and the
-// "No information available" refusal answer.
+// locomo-answer-prompt-v9: 时间题以绝对日期为主（v8 的"原样引用"让模型裸抄 last week/tomorrow 不换算），
+// 拒答条件收紧到"完全无相关记忆"（v8 对推理题拒答暴涨，cat3 gold 允许推测），
+// 日期输出自然格式（不直出 ISO 时间戳）。保留 v8 的消息发送时间兜底与 Question Date。
 export function buildLocomoAnswerPrompt(input: {
   question: string;
   questionDate?: string;
@@ -498,18 +496,21 @@ export function buildLocomoAnswerPrompt(input: {
     "2. Pay close attention to the timestamps to determine the answer. If memories contain contradictory information, the most recent memory is the source of truth.",
     "3. If the question asks about a specific event or fact, look for direct evidence in the memories.",
     "4. Your answer must be grounded in the memories. However, you may use general world knowledge to interpret or complete information found within a memory (e.g., identifying a landmark mentioned by description).",
-    "5. If the question involves time references (like \"last year\", \"two months ago\", etc.), you must calculate the actual date based on the memory's timestamp. For example, if a memory from 4 May 2022 mentions \"went to India last year,\" then the trip occurred in 2021. Use the Question Date only when the question is relative to the present and no memory timestamp applies.",
-    "6. Always convert relative time references to specific dates, months, or years in your final answer.",
-    "7. Do not confuse character names mentioned in memories with the actual users who created them.",
-    "8. The answer must be brief (under 5-6 words) and direct, with no extra description.",
+    "5. If the question involves time references (like \"last year\", \"two months ago\", \"tomorrow\"), always convert them to the actual date, month, or year using the memory's own timestamp. For example, if a memory from 4 May 2022 mentions \"went to India last year,\" then the trip occurred in 2021. Use the Question Date only when the question is relative to the present and no memory timestamp applies.",
+    "6. Never output a bare relative time expression (like \"last week\", \"next month\", \"tomorrow\") as the final answer. Give the absolute date, optionally followed by the memory's original expression in parentheses — e.g., \"June 2023 (next month, said on 25 May 2023)\".",
+    "7. When a memory has no explicit time expression, its message timestamp (消息发送时间) or event time (事实发生时间) is the best evidence of when the event happened. Never answer \"not specified\" when the memory or its timestamp identifies the event. Format dates naturally (e.g., \"29 January 2023\"), never as raw ISO timestamps.",
+    "8. If no memory directly answers the question but related memories allow a reasonable inference, give that best-guess answer instead of refusing — e.g., for \"Would she want another roadtrip soon?\" with a memory describing a bad roadtrip experience, answer \"Likely no\". Hypothetical or opinion questions about the users are answered from their recorded experiences and feelings. Refuse ONLY when no memory is even topically related.",
+    "9. Do not confuse character names mentioned in memories with the actual users who created them.",
+    "10. The answer must be brief (under 5-6 words) and direct, with no extra description.",
+    "11. Only when no memory is even topically related to the question, reply exactly: No information available.",
     "# APPROACH (Think step by step):",
     "1. First, examine all memories that contain information related to the question.",
     "2. Synthesize findings from multiple memories if a single entry is insufficient.",
     "3. Examine timestamps and content carefully, looking for explicit dates, times, locations, or events.",
-    "4. If the answer requires calculation (e.g., converting relative time references), perform the calculation.",
+    "4. If the answer requires calculation (e.g., converting relative time references), perform the calculation using the memory's message timestamp.",
     "5. Formulate a precise, concise answer based on the evidence from the memories (and allowed world knowledge).",
     "6. Double-check that your answer directly addresses the question asked and adheres to all instructions.",
-    "7. Ensure your final answer is specific and avoids vague time references.",
+    "7. Ensure your final answer is a specific absolute date or fact, grounded in the memories — never a bare relative expression and never a refusal when relevant memories exist.",
     input.serializedPrompt,
     `Question: ${input.question}`,
     ...(input.questionDate?.trim() ? [`Question Date: ${input.questionDate.trim()}`] : []),

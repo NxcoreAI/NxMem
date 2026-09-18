@@ -300,6 +300,19 @@ export async function createFactsWithLlmFusion(
       factType: fallbackLongMemEvalFactType(fact.factType),
       timeAnchor: fact.timeAnchor ?? null
     }, event.eventTime));
+  } else if (event.sourceApp === "locomo-native-evaluation") {
+    // LoCoMo：同样应用确定性时间归一化（相对表达 → validTime），事件时间缺失时回填消息时间（source_time），
+    // 避免 Context Pack 里 事实发生时间=未提供 而答案其实等于消息发送时间。
+    facts = facts.map((fact) => {
+      const normalized = applyLongMemEvalFactTemporal(fact, event.eventTime);
+      if (normalized.validTime || normalized.validTimeStart || !normalized.evidenceTime) return normalized;
+      return {
+        ...normalized,
+        validTime: normalized.evidenceTime,
+        validTimeBasis: "source_time" as const,
+        validTimeConfidence: "medium" as const
+      };
+    });
   }
 
   const trace: LlmFactFusionTrace = {
@@ -388,6 +401,7 @@ function longMemEvalSessionIdFromEvent(event: MemoryEvent) {
 function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvidenceRow[]) {
   const allowedSegmentIds = alignedEvidence.map((row) => row.segmentId);
   const isLongMemEval = event.sourceApp === "longmemeval";
+  const isLocomoNative = event.sourceApp === "locomo-native-evaluation";
   const payload = {
     instruction:
       "你是 Context 引擎的高价值记忆事实筛选器。请在内部完成筛选、合并和去重，不要输出推理过程、解释、Markdown 或代码块。",
@@ -403,7 +417,10 @@ function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvide
       isLongMemEval
         ? "同一 assistant 回答主题按语义选择 answer、knowledge 或 recommendation，并保留最终答案、必要限定、具体条目和原始顺序；涉及不同实体、事件、交易或时间点时拆分。"
         : "同一 assistant 回答主题默认合成一条 assistant_response、assistant_knowledge 或 assistant_recommendation，并保留最终答案、必要限定、具体条目和原始顺序；涉及不同实体、事件、交易或时间点时拆分。用户未采纳不影响 assistant 事实保留，但不得把 assistant 内容反推为用户偏好、经历、计划或信念。",
-      "用户采纳、拒绝、选择或纠正 assistant 建议时，另行保留用户最终形成的决定、计划或反馈，不重复输出已被完整事实覆盖的同义内容。"
+      "用户采纳、拒绝、选择或纠正 assistant 建议时，另行保留用户最终形成的决定、计划或反馈，不重复输出已被完整事实覆盖的同义内容。",
+      ...(isLocomoNative ? [
+        "对话中的具体生活细节都是经历类事实，必须逐条抽取：宠物行为、物品外观与图案、海报或衣物的文字内容、礼物、身体感受与情绪反应、小型日常事件。不得因语气随意、篇幅短小或看似琐碎而判定为寒暄省略。"
+      ] : [])
     ],
     selectionExamples: [
       "‘我三月去 Chicago 待了 3 天’：输出一条同时包含地点、月份和 3 天时长的行程事实。",
@@ -418,6 +435,9 @@ function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvide
       "不得编造或自行补算 count、sum、diff、duration、order 或排名。事实性数字主张必须在对应 factText、normalizedClaim 或明确的 validTime 字段中保留；跨语言月份可使用无歧义的英文月份名等价表达。",
       "evidence.validTimeStart 在 timeBasis=source_time 时仅是消息证据时间。只有证据明确表达事实日期、截止日或时间点时才设置语义 validTime；无法可靠解析或仅有不确定相对时间时保留原表达并省略语义时间字段，不得构造矛盾区间。",
       "保留来源限定、知识截止时间和适用范围；不得把 assistant 的推测、示例或低置信陈述升级为确定事实。",
+      ...(isLocomoNative ? [
+        "抽取对话中的所有独立原子事实，完整覆盖复合句、并列句及附带信息，并在主语可由上下文明确推断时补全主语而非跳过。一条事实保留事件的全部具体细节（对象、外观、位置、原因）；多个独立事件分别拆分。"
+      ] : []),
       ...(isLongMemEval ? [
         `factType 只能是以下枚举之一：${LONGMEMEVAL_FACT_TYPES.join(" | ")}。不得创造新类型或使用 assistant_ 前缀。`,
         "抽取对话中的所有独立原子事实，完整覆盖复合句、并列句及附带信息，并在主语可由上下文明确推断时补全主语而非跳过。",
@@ -703,7 +723,7 @@ function convertLlmFacts(
       ...(event.contextScopeId ? { contextScopeId: event.contextScopeId } : {}),
       factType: longMemEvalFactType ?? (typeof item.factType === "string" && item.factType.trim() ? item.factType.trim() : primary.modality),
       factText,
-      ...(isLongMemEval ? { timeAnchor: timeAnchor ?? null } : {}),
+      ...(isLongMemEval || isLocomoNative ? { timeAnchor: timeAnchor ?? null } : {}),
       sourceClaim,
       normalizedClaim,
       linkedEventIds: [event.eventId],
