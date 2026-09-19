@@ -85,7 +85,7 @@ test("LongMemEval compatibility characterization stays stable through the shared
     { itemId: "stm-new", evidenceRole: "new_state" },
     { itemId: "stm-old", evidenceRole: "temporal_start" }
   ]);
-  assert.equal(createHash("sha256").update(prompt).digest("hex"), "8f3cd0dd628b0cb3f004fa804aab24e4852d3c5648dad0e14c4cfac036197df0");
+  assert.equal(createHash("sha256").update(prompt).digest("hex"), "1d2c505a7d03b2c2572b613d6f536e27474227f725686ac789b5a35ec2909ba5");
   assert.deepEqual(ranking, {
     k: 3,
     recallAtK: 1,

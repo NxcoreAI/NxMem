@@ -4488,7 +4488,7 @@ function longMemEvalAnswerContextQuery(context: SampleContext): Omit<ContextQuer
     tenantId: "local",
     principalId: "longmemeval",
     contextScopeId: context.contextScopeId,
-    ...(context.questionDate ? { referenceTime: normalizeLongMemEvalDateTime(context.questionDate) } : {}),
+    ...(context.questionDate ? { referenceTime: normalizeLongMemEvalDateTime(context.questionDate), timezone: "UTC" } : {}),
     includeInactive: true,
     limit: longMemEvalAnswerCandidateLimit,
     offset: 0

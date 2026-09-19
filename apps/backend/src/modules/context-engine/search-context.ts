@@ -1621,7 +1621,7 @@ function matchTemporalMetadata(
 
 function isAmbiguousRelativeTemporalQuery(text: string) {
   const normalized = text.normalize("NFKC").toLocaleLowerCase();
-  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b|\b(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
+  return /(?:\b(?:recently|lately|recent)\b|(?:最近|近期|近来|前段时间|不久前)|\b(?:last|past)\s+(?:month|year)\b|\b(?:last|this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\b(?:about|around|approximately)\s+(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b|\b(?:an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|few|several|couple(?:\s+of)?)\s+(?:weeks?|months?|years?)\s+ago\b)/iu.test(normalized);
 }
 
 function temporalAxisIntersects(

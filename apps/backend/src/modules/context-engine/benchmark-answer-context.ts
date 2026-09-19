@@ -269,12 +269,13 @@ export function renderBenchmarkAnswerContext(
   referenceTime: string | undefined,
   candidates: BenchmarkAnswerEvidenceCandidate[],
   packId: string,
-  questionType = "multi-session"
+  questionType = "multi-session",
+  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }
 ) {
   const indexes = new Map<string, number>();
   const ordered = orderCandidatesForQuestion(candidates, questionType, question);
   ordered.forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
-  return [renderHeader(questionType, question, referenceTime, packId), ...(ordered.length
+  return [renderHeader(questionType, question, referenceTime, packId, temporal), ...(ordered.length
     ? ordered.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"])].join("\n");
 }
 
@@ -306,7 +307,7 @@ async function buildPack(
 ): Promise<ContextPack> {
   const packId = `pack_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const traceId = `trace_${packId}`;
-  const serializedPrompt = renderBenchmarkAnswerContext(input.question, input.displayReferenceTime ?? input.referenceTime, selection.selectedCandidates, packId, input.questionType);
+  const serializedPrompt = renderBenchmarkAnswerContext(input.question, input.displayReferenceTime ?? input.referenceTime, selection.selectedCandidates, packId, input.questionType, search.temporal);
   const used = estimateContextTokens(serializedPrompt);
   const taskContext = selection.selectedCandidates.map(candidateContextItem);
   const dropped: ContextPack["dropped"] = [
@@ -332,9 +333,26 @@ async function buildPack(
   return pack;
 }
 
-function renderHeader(type: string, question: string, referenceTime?: string, packId = "pending") {
+function renderHeader(
+  type: string,
+  question: string,
+  referenceTime?: string,
+  packId = "pending",
+  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }
+) {
   const note = arrangementNote(type, question);
-  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : []), ...(note ? [note] : [])].join("\n");
+  const conversion = temporalConversionNote(temporal);
+  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : []), ...(note ? [note] : []), ...(conversion ? [conversion] : [])].join("\n");
+}
+
+// 相对日期换算：把问题里 "last Saturday"/"two weeks ago" 解析出的具体日期直接告诉模型，
+// 免去它对每条证据自行换算星期/日期——换算错或不敢换算就会弃答。
+function temporalConversionNote(temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }) {
+  if (!temporal?.range || temporal.source === "none" || temporal.source === "explicit") return null;
+  const start = temporal.range.startTime.slice(0, 10);
+  const end = temporal.range.endTime.slice(0, 10);
+  const reference = temporal.referenceTime.slice(0, 10);
+  return `【时间换算】问题中的相对时间已按问题时间 ${reference} 解析为 ${start === end ? start : `${start} 至 ${end}`}。判断 "last Saturday"、"two weeks ago" 这类表达时，直接用证据的"事实发生时间/消息发送时间"与该日期匹配，不要自行估算。`;
 }
 
 function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, indexes?: Map<string, number>) {

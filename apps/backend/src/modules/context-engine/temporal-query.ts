@@ -281,6 +281,18 @@ export function resolveDeterministicTemporalRange(
     return localDateSpan(start, addLocalDays(start, 7), timezone);
   }
 
+  const weekdayExpression = parseWeekdayExpression(normalized);
+  if (weekdayExpression) {
+    const referenceWeekday = new Date(Date.UTC(referenceDate.year, referenceDate.month - 1, referenceDate.day)).getUTCDay();
+    const diff = (referenceWeekday - weekdayExpression.weekday + 7) % 7;
+    const target = weekdayExpression.modifier === "last"
+      ? addLocalDays(referenceDate, -(diff || 7))
+      : weekdayExpression.modifier === "this"
+        ? addLocalDays(referenceDate, -diff)
+        : addLocalDays(referenceDate, (7 - diff) || 7);
+    return localDateRange(target, timezone);
+  }
+
   const calendarPeriod = parseCalendarPeriod(normalized);
   if (calendarPeriod) {
     return calendarPeriodRange(referenceDate, timezone, calendarPeriod.unit, calendarPeriod.offset);
@@ -325,8 +337,18 @@ export function containsDeterministicRelativeTimeExpression(text: string) {
   return /(?:前天|昨天|今天|明天|后天|本周|这周|上周|下周|本月|这个月|上个月|下个月|今年|去年|明年|过去|最近|接下来|未来|[零〇一二两三四五六七八九十百千\d]+\s*(?:分钟|小时|天|周|星期|个月|月|年)\s*[前后]|day before yesterday|yesterday|today|tomorrow|day after tomorrow|this week|last week|next week|this month|last month|next month|this year|last year|next year|past\s+\S+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|last\s+\S+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|next\s+\S+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)|\S+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+(?:ago|later|from now)|after\s+\S+\s+(?:minutes?|hours?|days?|weeks?|months?|years?))/iu.test(normalized);
 }
 
-function parseCalendarPeriod(text: string): { unit: "month" | "year"; offset: -1 | 0 | 1 } | undefined {
-  const periods: Array<{ pattern: RegExp; unit: "month" | "year"; offset: -1 | 0 | 1 }> = [
+const weekdayNumbers: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6
+};
+
+function parseWeekdayExpression(text: string): { modifier: "last" | "this" | "next"; weekday: number } | undefined {
+  const match = text.match(/\b(last|this|next)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/iu);
+  if (!match) return undefined;
+  const weekday = weekdayNumbers[match[2]!.toLocaleLowerCase()];
+  return weekday === undefined ? undefined : { modifier: match[1]!.toLocaleLowerCase() as "last" | "this" | "next", weekday };
+}
+
+function parseCalendarPeriod(text: string): { unit: "month" | "year"; offset: -1 | 0 | 1 } | undefined {  const periods: Array<{ pattern: RegExp; unit: "month" | "year"; offset: -1 | 0 | 1 }> = [
     { pattern: /(?:上个月|last month)/iu, unit: "month", offset: -1 },
     { pattern: /(?:本月|这个月|this month)/iu, unit: "month", offset: 0 },
     { pattern: /(?:下个月|next month)/iu, unit: "month", offset: 1 },
@@ -348,7 +370,7 @@ function parseRelativeRange(text: string) {
     }
   }
 
-  const english = text.match(/\b(past|last|next)\s+(an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\b/iu);
+  const english = text.match(/\b(past|last|next)\s+(an?|\d+|couple(?:\s+of)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\b/iu);
   if (!english) return undefined;
   const count = parsePositiveQuantity(english[2]);
   const unit = parseRelativeUnit(english[3]);
@@ -366,8 +388,8 @@ function parseRelativePoint(text: string) {
     }
   }
 
-  const suffix = text.match(/\b(an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\s+(ago|later|from now)\b/iu);
-  const prefix = text.match(/\bafter\s+(an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\b/iu);
+  const suffix = text.match(/\b(an?|\d+|couple(?:\s+of)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\s+(ago|later|from now)\b/iu);
+  const prefix = text.match(/\bafter\s+(an?|\d+|couple(?:\s+of)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(minutes?|hours?|days?|weeks?|months?|years?)\b/iu);
   const match = suffix ?? prefix;
   if (!match) return undefined;
   const count = parsePositiveQuantity(match[1]);
@@ -671,6 +693,8 @@ function parsePositiveQuantity(value: string | undefined) {
   const english: Record<string, number> = {
     a: 1,
     an: 1,
+    couple: 2,
+    "couple of": 2,
     one: 1,
     two: 2,
     three: 3,
