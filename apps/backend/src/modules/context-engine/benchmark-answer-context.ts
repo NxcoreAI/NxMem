@@ -272,9 +272,29 @@ export function renderBenchmarkAnswerContext(
   questionType = "multi-session"
 ) {
   const indexes = new Map<string, number>();
-  candidates.forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
-  return [renderHeader(questionType, question, referenceTime, packId), ...(candidates.length
-    ? candidates.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"])].join("\n");
+  const ordered = orderCandidatesForQuestion(candidates, questionType, question);
+  ordered.forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
+  return [renderHeader(questionType, question, referenceTime, packId), ...(ordered.length
+    ? ordered.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"])].join("\n");
+}
+
+// 多证据聚合辅助：时间题把证据按发生时间排成时间线，计算/求和题按来源会话分组——
+// 呈现顺序即推理顺序，减少答题模型跨证据拼装（排序、数数、求和）时的遗漏。
+function orderCandidatesForQuestion(candidates: BenchmarkAnswerEvidenceCandidate[], type: string, question: string) {
+  if (type === "temporal-reasoning") {
+    return candidates.slice().sort((a, b) => candidateTime(a).localeCompare(candidateTime(b)));
+  }
+  if (needsCalculation(type, question)) {
+    return candidates.slice().sort((a, b) =>
+      (a.sourceSessionIds[0] ?? "").localeCompare(b.sourceSessionIds[0] ?? "") || candidateTime(a).localeCompare(candidateTime(b)));
+  }
+  return candidates;
+}
+
+function arrangementNote(type: string, question: string) {
+  if (type === "temporal-reasoning") return "【证据排列】证据已按事实发生时间（validTime，缺省用消息时间）从早到晚排序。";
+  if (needsCalculation(type, question)) return "【证据排列】证据已按来源会话分组，同会话证据相邻，会话内按时间排序；跨会话计数/求和时逐会话核对，勿遗漏。";
+  return null;
 }
 
 async function buildPack(
@@ -313,7 +333,8 @@ async function buildPack(
 }
 
 function renderHeader(type: string, question: string, referenceTime?: string, packId = "pending") {
-  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : [])].join("\n");
+  const note = arrangementNote(type, question);
+  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : []), ...(note ? [note] : [])].join("\n");
 }
 
 function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, indexes?: Map<string, number>) {
