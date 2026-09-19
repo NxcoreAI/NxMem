@@ -6290,7 +6290,16 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       this.addColumnIfMissing("short_term_memories", "valid_time_confidence", "TEXT NOT NULL DEFAULT 'low'");
 
       const migrationTimestamp = new Date().toISOString();
-      const rows = this.db.prepare(`
+      // 大库上每次打开都跑全量 json_each 聚合回填要数分钟；四列已齐全时直接短路。
+      const needsBackfill = this.db.prepare(`
+        SELECT 1 FROM short_term_memories
+        WHERE tenant_id IS NULL OR trim(tenant_id) = ''
+           OR principal_id IS NULL OR trim(principal_id) = ''
+           OR created_at IS NULL OR trim(created_at) = ''
+           OR updated_at IS NULL OR trim(updated_at) = ''
+        LIMIT 1
+      `).get() !== undefined;
+      const rows = needsBackfill ? this.db.prepare(`
         SELECT
           stm.memory_data_id AS memoryDataId,
           stm.tenant_id AS tenantId,
@@ -6329,7 +6338,7 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
         factObservedAt: string | null;
         eventTime: string | null;
         latestChangeAt: string | null;
-      }>;
+      }> : [];
 
       const update = this.db.prepare(`
         UPDATE short_term_memories
