@@ -3207,6 +3207,7 @@ async function generateHypothesis(
   const prompt = buildLongMemEvalAnswerPrompt({
     question: context.question,
     ...(context.questionDate ? { questionDate: context.questionDate } : {}),
+    ...(input?.questionType ? { questionType: input.questionType } : {}),
     serializedPrompt: answerContext.serializedPrompt
   });
 
@@ -4548,9 +4549,15 @@ function renderRetrievalResultsPrompt(task: string, items: ContextPackItem[]) {
 export function buildLongMemEvalAnswerPrompt(input: {
   question: string;
   questionDate?: string;
+  questionType?: string;
   serializedPrompt: string;
   answer?: string;
 }) {
+  const preferenceGuidance = input.questionType === "single-session-preference"
+    ? [
+        "This is a preference question: the user asks for a suggestion or recommendation. Do not search the Context Pack for a ready-made answer to quote — instead infer the user's established preferences from their past conversations (foods they liked, hotel features they wanted, activities they enjoyed), then apply those preferences to craft the requested suggestion directly. An existing preference for a similar situation (e.g. a hotel with a great view in another city) is sufficient evidence; generalize it to the current request instead of answering 'cannot be determined'."
+      ]
+    : [];
   return [
     "Answer the question using the provided Context Pack.",
     `Question: ${input.question}`,
@@ -4579,6 +4586,7 @@ export function buildLongMemEvalAnswerPrompt(input: {
 
     "For temporal reasoning, prefer validTime when it is available and consistent with the fact text. Otherwise, infer the event time from factText or sourceClaim together with that fact’s evidenceTime. Resolve relative expressions such as “today,” “yesterday,” “just got back,” “last week,” and “ago” against the fact’s evidenceTime, not the question date. Preserve the precision supported by the text, and do not automatically treat evidenceTime as the event time. A missing validTime alone is not insufficient evidence; answer “cannot be determined” only when no defensible inference provides the precision required by the question.",
     "For temporal reasoning, identify the events and their relationship before calculating. - For “between A and B,” use A and B as the temporal operands. - When “when,” “by the time,” “at the time,” or “since” makes B the reference event, calculate up to B, not the Question Date. - Use the Question Date only when the question is relative to the present and provides no other reference event.",
+    ...preferenceGuidance,
     "For counts, list, justify, and deduplicate qualifying items first in your internal reasoning, then put only the concise result in the final response.",
     "For an update, correction, replacement, latest-state, or current-state question, when facts concern the same entity and property within the same Session, prefer the fact with the larger factSequence unless explicit validTime, evidenceTime, or correction semantics show otherwise. Across different Sessions, determine recency from validTime, evidenceTime, and explicit relationships instead of comparing factSequence values, and treat the chronologically later applicable fact as the latest fact to prioritize when answering.",
     "Answer only based on information supported by the Context Pack. If the evidence is insufficient or ambiguous, say that the answer cannot be determined.",

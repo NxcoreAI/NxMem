@@ -36,6 +36,7 @@ test("collectStandingAffectiveStmMemories scopes, filters, sorts and limits", as
     { ...baseStm("stm_old"), createdAt: "2026-01-01T00:00:00.000Z", structuredFacts: pref("likes tea") },
     { ...baseStm("stm_new"), createdAt: "2026-02-01T00:00:00.000Z", structuredFacts: pref("likes quinoa") },
     { ...baseStm("stm_inactive"), lifecycleStatus: "expired", structuredFacts: pref("stale") },
+    { ...baseStm("stm_queued"), lifecycleStatus: "candidate_queue", createdAt: "2026-03-01T00:00:00.000Z", structuredFacts: pref("likes slow cooker tips") },
     { ...baseStm("stm_semantic"), structuredFacts: { schemaVersion: "memory-structured-facts.v1" as const, memoryKind: "short_term" as const, facts: [{ claim: "event", explanation: "", factType: "event" }] } },
     { ...baseStm("stm_excluded"), structuredFacts: pref("already ranked") }
   ];
@@ -48,7 +49,7 @@ test("collectStandingAffectiveStmMemories scopes, filters, sorts and limits", as
     { tenantId: "local", principalId: "longmemeval", contextScopeId: "scope_1" },
     new Set(["stm_excluded"])
   );
-  assert.deepEqual(collected.map((memory) => memory.memoryDataId), ["stm_new", "stm_old"]);
+  assert.deepEqual(collected.map((memory) => memory.memoryDataId), ["stm_queued", "stm_new", "stm_old"]);
 });
 
 test("collectStandingAffectiveStmMemories returns empty without scope", async () => {

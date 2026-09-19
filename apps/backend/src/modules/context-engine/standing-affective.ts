@@ -5,6 +5,10 @@ import { isAffectiveShortTermMemory } from "./memory-region.js";
 
 export const STANDING_AFFECTIVE_LIMIT = 10;
 
+// 情感脑区不等待 reinforcement：candidate_queue（79% 的偏好 STM 停留态）同样参与常驻注入。
+// ponytail: 若 candidate_queue 噪声过大，再按 observeCount/准入分过滤。
+const STANDING_AFFECTIVE_STATUSES = new Set(["active", "candidate_queue"]);
+
 export interface StandingAffectiveScopeInput {
   tenantId: string;
   principalId: string;
@@ -23,7 +27,7 @@ export async function collectStandingAffectiveStmMemories(
   if (!ids.length) return [];
   const memories = await repository.getShortTermMemoriesByIds(ids);
   return memories
-    .filter((memory) => memory.lifecycleStatus === "active")
+    .filter((memory) => STANDING_AFFECTIVE_STATUSES.has(memory.lifecycleStatus))
     .filter(isAffectiveShortTermMemory)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, STANDING_AFFECTIVE_LIMIT);
