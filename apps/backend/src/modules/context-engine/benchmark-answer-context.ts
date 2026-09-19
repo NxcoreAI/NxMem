@@ -35,6 +35,8 @@ export interface BenchmarkAnswerContextInput {
   principalId: string;
   contextScopeId: string;
   referenceTime?: string;
+  /** 时区（IANA 名），传给 temporal 解析；换算行日期也按它格式化。 */
+  timezone?: string;
   /** Optional unnormalized timestamp used only when rendering the answer prompt. */
   displayReferenceTime?: string;
   modelRunId?: string;
@@ -103,6 +105,7 @@ export async function buildBenchmarkAnswerContext(
     principalId: input.principalId,
     contextScopeId: input.contextScopeId,
     ...(input.referenceTime ? { referenceTime: input.referenceTime } : {}),
+    ...(input.timezone ? { timezone: input.timezone } : {}),
     ...(input.includeInactive !== undefined ? { includeInactive: input.includeInactive } : {})
   }, {
     recordRetrieval: false,
@@ -270,7 +273,7 @@ export function renderBenchmarkAnswerContext(
   candidates: BenchmarkAnswerEvidenceCandidate[],
   packId: string,
   questionType = "multi-session",
-  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }
+  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }
 ) {
   const indexes = new Map<string, number>();
   const ordered = orderCandidatesForQuestion(candidates, questionType, question);
@@ -338,7 +341,7 @@ function renderHeader(
   question: string,
   referenceTime?: string,
   packId = "pending",
-  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }
+  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }
 ) {
   const note = arrangementNote(type, question);
   const conversion = temporalConversionNote(temporal);
@@ -347,12 +350,16 @@ function renderHeader(
 
 // 相对日期换算：把问题里 "last Saturday"/"two weeks ago" 解析出的具体日期直接告诉模型，
 // 免去它对每条证据自行换算星期/日期——换算错或不敢换算就会弃答。
-function temporalConversionNote(temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string }) {
+function temporalConversionNote(temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }) {
   if (!temporal?.range || temporal.source === "none" || temporal.source === "explicit") return null;
-  const start = temporal.range.startTime.slice(0, 10);
-  const end = temporal.range.endTime.slice(0, 10);
-  const reference = temporal.referenceTime.slice(0, 10);
-  return `【时间换算】问题中的相对时间已按问题时间 ${reference} 解析为 ${start === end ? start : `${start} 至 ${end}`}。判断 "last Saturday"、"two weeks ago" 这类表达时，直接用证据的"事实发生时间/消息发送时间"与该日期匹配，不要自行估算。`;
+  // 日期必须按解析时的时区格式化：UTC slice 会把上海时区的单日区间显示成错位的两天。
+  const timezone = temporal.timezone ?? "UTC";
+  const dateLabel = (iso: string) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+  const start = dateLabel(temporal.range.startTime);
+  const end = dateLabel(temporal.range.endTime);
+  const singleDay = Date.parse(temporal.range.endTime) - Date.parse(temporal.range.startTime) <= 86_400_000;
+  const reference = dateLabel(temporal.referenceTime);
+  return `【时间换算】问题中的相对时间已按问题时间 ${reference} 解析为 ${singleDay ? start : `${start} 至 ${end}`}。判断 "last Saturday"、"two weeks ago" 这类表达时，直接用证据的"事实发生时间/消息发送时间"与该日期匹配，不要自行估算。`;
 }
 
 function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, indexes?: Map<string, number>) {

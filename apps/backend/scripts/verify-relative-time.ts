@@ -21,6 +21,8 @@ check("last wednesday (ref itself -> 7 back)", day(r("last wednesday")?.startTim
 check("a couple of days ago", day(r("i cooked something a couple of days ago")?.startTime ?? ""), "2022-03-14");
 check("couple weeks ago", day(r("a couple of weeks ago")?.startTime ?? ""), "2022-03-02");
 check("last week still works", day(r("last week")?.startTime ?? ""), "2022-03-07");
+check("last month -> rolling", `${day(r("in the last month")?.startTime ?? "")}~${day(r("in the last month")?.endTime ?? "")}`, "2022-02-16~2022-03-17");
+check("past month -> rolling", `${day(r("in the past month")?.startTime ?? "")}~${day(r("in the past month")?.endTime ?? "")}`, "2022-02-16~2022-03-17");
 
 // prompt header 时间换算行
 const candidate: BenchmarkAnswerEvidenceCandidate = {

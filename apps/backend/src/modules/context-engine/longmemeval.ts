@@ -3447,6 +3447,7 @@ async function buildLongMemEvalAnswerContext(
       contextScopeId: context.contextScopeId,
       ...(context.questionDate ? {
         referenceTime: normalizeLongMemEvalDateTime(context.questionDate),
+        timezone: "UTC",
         displayReferenceTime: context.questionDate
       } : {}),
       modelRunId: context.modelRunId,
