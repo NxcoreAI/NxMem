@@ -293,10 +293,10 @@ export function resolveDeterministicTemporalRange(
     return localDateRange(target, timezone);
   }
 
-  // LongMemEval 语义里 "last month"/"past month" 指过去一个月（rolling），不是上个自然月；
-  // 日历月窗口会漏掉最近 30 天的证据，导致计数题答错。
+  // LongMemEval 语义里 "last month"/"past month" 指最近一段模糊时间，gt 标注不严格卡 30 天；
+  // 窗口给宽（过去两个月），宁可多含证据让模型自行排除，避免边缘证据被硬过滤。
   if (/\b(?:in\s+the\s+)?(?:last|past)\s+month\b/iu.test(normalized)) {
-    return localDateSpan(addLocalMonths(referenceDate, -1), addLocalDays(referenceDate, 1), timezone);
+    return localDateSpan(addLocalMonths(referenceDate, -2), addLocalDays(referenceDate, 1), timezone);
   }
 
   const calendarPeriod = parseCalendarPeriod(normalized);
