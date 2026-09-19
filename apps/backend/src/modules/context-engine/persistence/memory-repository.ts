@@ -8388,7 +8388,7 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
   override searchFactVector(queryVector: number[], options: FactIndexSearchQuery = {}): FactIndexSearchHit[] {
     if (!queryVector.length) return [];
     const rows = this.db.prepare(`
-      SELECT v.owner_id AS factId, v.vector AS vector, fact.access_state AS accessState
+      SELECT v.owner_id AS factId, v.vector AS vector
       FROM context_vector_index_entries v
       JOIN fact_items fact ON fact.fact_id = v.owner_id
       WHERE v.owner_type = 'fact'
@@ -8405,7 +8405,6 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     return rows.flatMap((raw) => {
       const row = normalizeRow(raw as Record<string, unknown>);
       const factId = String(row.factId ?? "");
-      if (row.accessState === "permission-invalid") return [];
       const vector = parseJsonArray(row.vector).map(Number);
       return [{ factId, score: cosine(queryVector, vector) }];
     }).filter((hit) => hit.score > 0)

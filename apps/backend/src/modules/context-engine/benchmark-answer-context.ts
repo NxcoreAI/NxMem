@@ -25,7 +25,7 @@ export type BenchmarkAnswerSourceRole = "user" | "assistant" | "tool" | "unknown
 export type BenchmarkAnswerEvidenceRole =
   | "direct_answer" | "temporal_start" | "temporal_end" | "old_state" | "new_state"
   | "calculation_operand" | "disambiguation";
-export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority";
+export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority" | "fact_quota";
 
 export interface BenchmarkAnswerContextInput {
   questionId: string;
@@ -116,10 +116,19 @@ export async function buildBenchmarkAnswerContext(
   });
   const allowed = new Set<ContextSearchResult["layer"]>(input.allowedLayers);
   const forbidden = search.results.filter((item) => !allowed.has(item.layer));
-  const results = search.results
-    .filter((item) => allowed.has(item.layer))
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
-    .slice(0, candidateLimit);
+  // fact 层单句断言与问题字面匹配天然占优，rerank 后会碾压式挤掉带完整上下文的 STM 证据；
+  // 只做兜底补充：候选池里 fact 最多占 30%，其余留给 STM。
+  const factCap = Math.floor(candidateLimit * 0.3);
+  let factCount = 0;
+  const results: typeof search.results = [];
+  for (const item of search.results
+    .filter((result) => allowed.has(result.layer))
+    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))) {
+    if (item.layer === "fact" && factCount >= factCap) continue;
+    if (item.layer === "fact") factCount += 1;
+    results.push(item);
+    if (results.length >= candidateLimit) break;
+  }
   const standingMemories = input.standingAffectiveInjection === false || !allowed.has("stm")
     ? []
     : await collectStandingAffectiveStmMemories(repository, input, new Set(results.map((result) => result.id)));
@@ -252,9 +261,17 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
   const considered = [...standing, ...ranked.slice(0, baseline), ...ranked.slice(baseline, rankedQuota)];
   let usedTokens = estimateContextTokens(renderHeader(input.questionType, input.question, input.referenceTime));
   const selectedCandidates: BenchmarkAnswerEvidenceCandidate[] = [];
+  // fact 兜底席位：选择层同样限流，防止高分 fact 占满证据挤掉 STM。
+  const factQuota = Math.max(4, Math.floor(evidenceLimit / 4));
+  let factSelected = 0;
   for (const candidate of considered) {
+    if (candidate.item.layer === "fact" && factSelected >= factQuota) {
+      rejected.push(rejection(candidate, "fact_quota"));
+      continue;
+    }
     const tokens = estimateContextTokens(renderItem(candidate, selectedCandidates.length + 1));
     if (usedTokens + tokens > input.tokenBudget) { rejected.push(rejection(candidate, "budget")); continue; }
+    if (candidate.item.layer === "fact") factSelected += 1;
     selectedCandidates.push(candidate); usedTokens += tokens;
   }
   const consideredIds = new Set([...selectedCandidates.map((item) => item.item.id), ...rejected.map((item) => item.itemId)]);
