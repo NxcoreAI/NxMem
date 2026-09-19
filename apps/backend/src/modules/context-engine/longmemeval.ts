@@ -3451,12 +3451,12 @@ async function buildLongMemEvalAnswerContext(
       } : {}),
       modelRunId: context.modelRunId,
       storeNamespace: context.storeNamespace,
-      allowedLayers: ["stm"],
+      allowedLayers: ["fact", "stm"],
       candidateLimit: longMemEvalAnswerCandidateLimit,
       evidenceLimit: longMemEvalAnswerEvidenceLimit,
       tokenBudget,
       includeInactive: true,
-      factRetrieval: false,
+      factRetrieval: true,
       resolveSessionId: (source) => longMemEvalSessionIdForQuestion(source, context.questionId)
     })
   });
