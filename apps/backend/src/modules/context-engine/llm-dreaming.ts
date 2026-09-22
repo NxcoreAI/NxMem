@@ -247,7 +247,7 @@ export async function runLlmDreaming(
     createdAt: new Date().toISOString()
   };
 
-  if (fallbackReason && options.fallbackMode === "throw") {
+  if (fallbackReason && options.fallbackMode !== "allow") {
     await repository.saveLlmDreamingTrace(trace);
     throw new Error(`ltm_dreaming_fallback:${fallbackReason}`);
   }

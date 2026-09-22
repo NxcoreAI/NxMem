@@ -39,6 +39,8 @@ export interface LlmFactFusionOptions {
   /** LongMemEval-only semantic retries for parseable responses with no valid facts. */
   semanticRetryMaxAttempts?: number;
   semanticRetryInstruction?: string;
+  /** 内部：语义重试递归深度，>0 表示这是内部重试调用而非最外层。 */
+  semanticRetryDepth?: number;
 }
 
 export interface LlmFactFusionResult {
@@ -140,7 +142,8 @@ export async function createFactsWithLlmFusion(
   let facts: FactItem[] = [];
   let rejectedSegments: LlmFactFusionResult["rejectedSegments"] = [];
   let fallbackReason: string | undefined;
-  const shouldThrowOnFallback = options.fallbackMode === "throw";
+  // ponytail: 默认 throw；静默降级曾让 23854 个会话在无 key 时全部以 chunk 原文入库
+  const shouldThrowOnFallback = options.fallbackMode !== "allow";
 
   if (!apiKey) {
     fallbackReason = "missing_api_key";
@@ -250,6 +253,7 @@ export async function createFactsWithLlmFusion(
         fallbackMode: "throw",
         emptyFactsMode: "fallback",
         semanticRetryMaxAttempts: (options.semanticRetryMaxAttempts ?? 0) - 1,
+        semanticRetryDepth: (options.semanticRetryDepth ?? 0) + 1,
         semanticRetryInstruction: [
           "这是语义抽取重试。上一次响应没有产生任何可用事实。",
           "请重新检查输入中的 user 证据，抽取可持久化的用户事实；即使事实位于较长对话中，也要保留具体实体、动作、数量、价格和时间。",
@@ -335,7 +339,11 @@ export async function createFactsWithLlmFusion(
 
   await repository.saveLlmFactFusionTrace(trace);
 
-  if (fallbackReason && shouldThrowOnFallback) {
+  // ponytail: 最外层语义重试耗尽 = 该会话合法的空结果（与显式 facts:[] 同等对待）；
+  // throw 会被 stage 重试放大成整个样本报废。内部递归层仍要 throw，让外层决定降级方式。
+  const emptyAfterSemanticRetry = fallbackReason === "semantic_retry_exhausted:llm_returned_no_valid_facts"
+    && (options.semanticRetryDepth ?? 0) === 0;
+  if (fallbackReason && shouldThrowOnFallback && !emptyAfterSemanticRetry) {
     throw new FactFusionFallbackError(fallbackReason, trace);
   }
 

@@ -711,7 +711,7 @@ export function registerContextEngineRoutes(
     const resumeLegacy = body.resumeLegacy === true;
     const answerContextMode = parseLongMemEvalAnswerContextMode(body.answerContextMode);
     const disableIngestLlm = body.disableIngestLlm === true;
-    const allowLlmFallback = body.allowLlmFallback !== false;
+    const allowLlmFallback = body.allowLlmFallback === true;
     const skipStmAdmission = body.skipStmAdmission === true;
     const skipLtmDreaming = true;
     const modelOnlyEvaluation = body.modelOnlyEvaluation === true;

@@ -79,7 +79,7 @@ export function parseArgs(argv: string[]): CliOptions {
     enableLtmReinforcement: false,
     answerContextMode: "context_pack",
     disableIngestLlm: false,
-    allowLlmFallback: true,
+    allowLlmFallback: false,
     skipStmAdmission: false,
     skipLtmDreaming: true,
     modelOnlyEvaluation: false,

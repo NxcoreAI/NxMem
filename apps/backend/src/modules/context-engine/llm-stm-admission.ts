@@ -142,7 +142,7 @@ export async function evaluateShortTermAdmissionsWithLlm(
   };
   await repository.saveLlmStmAdmissionTrace(trace);
 
-  if (fallbackReason && options.fallbackMode === "throw") {
+  if (fallbackReason && options.fallbackMode !== "allow") {
     throw new Error(`stm_admission_fallback:${fallbackReason}`);
   }
 
@@ -250,7 +250,7 @@ export async function evaluateShortTermAdmissionWithLlm(
   };
   await repository.saveLlmStmAdmissionTrace(trace);
 
-  if (fallbackReason && options.fallbackMode === "throw") {
+  if (fallbackReason && options.fallbackMode !== "allow") {
     throw new Error(`stm_admission_fallback:${fallbackReason}`);
   }
 

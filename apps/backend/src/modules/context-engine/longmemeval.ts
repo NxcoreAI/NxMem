@@ -852,7 +852,7 @@ export async function evaluateLongMemEvalDataset(
   const answerOnlyEvaluation = options.answerOnlyEvaluation === true;
   const runLtmDreaming = false;
   const disableIngestLlm = options.disableIngestLlm === true;
-  const strictLlm = options.allowLlmFallback === false;
+  const strictLlm = options.allowLlmFallback !== true;
   const skipStmAdmission = options.skipStmAdmission === true;
   const answerContextMode = normalizeAnswerContextMode(options.answerContextMode);
   const ingestSampleConcurrency = normalizeIngestSampleConcurrency(options.ingestSampleConcurrency);
@@ -1382,7 +1382,7 @@ async function executeLongMemEvalSampleAndCommit(
           logger: input.logger,
           logIngestRequestContext: input.logIngestRequestContext,
           disableIngestLlm: input.disableIngestLlm,
-          ...(input.strictLlm ? { allowLlmFallback: false } : {}),
+          allowLlmFallback: !input.strictLlm,
           skipStmAdmission: input.skipStmAdmission,
           llm: withLongMemEvalStreamingTransport(input.llm?.extraction, input.signal),
           trace: input.trace,
@@ -1535,7 +1535,7 @@ async function executeLongMemEvalSampleAndCommit(
           },
           execute: ({ stageAttempt }) => runDreamingInBatches(run.repository, {
           ...withLongMemEvalStreamingTransport(input.llm?.extraction, input.signal),
-          fallbackMode: input.strictLlm ? "throw" : "allow",
+          fallbackMode: input.strictLlm === false ? "allow" : "throw",
           observer: createLongMemEvalTraceLlmObserver(input, "ltm", stageAttempt)
           }, {
           logger: input.logger,
@@ -3266,7 +3266,7 @@ async function generateHypothesis(
         skipReason: answer.reason
       };
     }
-    if (input?.allowLlmFallback === false) {
+    if (input?.allowLlmFallback !== true) {
       throw new Error(`answer_fallback:${answer.reason}`);
     }
     return {
@@ -4837,7 +4837,7 @@ async function judgeHypothesis(
       if (response.reason.startsWith("retry_exhausted:")) {
         return skippedJudgment(judge, response.reason);
       }
-      if (input?.allowLlmFallback === false) {
+      if (input?.allowLlmFallback !== true) {
         throw new Error(`judge_fallback:${response.reason}`);
       }
       return {
@@ -4892,7 +4892,7 @@ async function judgeHypothesis(
       raw: { text: judgeText }
     };
   } catch (error) {
-    if (input?.allowLlmFallback === false) throw error;
+    if (input?.allowLlmFallback !== true) throw error;
     return {
       label: fallbackCorrect ? "correct" : "incorrect",
       score: fallbackCorrect ? 1 : 0,
@@ -5907,7 +5907,7 @@ async function ingestSampleTimeline(
         )
       } : { observer }, {
         disableIngestLlm: input.disableIngestLlm === true,
-        allowLlmFallback: input.disableIngestLlm === true || input.allowLlmFallback !== false,
+        allowLlmFallback: input.disableIngestLlm === true || input.allowLlmFallback === true,
         skipStmAdmission: input.skipStmAdmission === true,
         ...(input.trace ? { trace: input.trace } : {}),
         stageAttempt: input.stageAttempt ?? 1,
@@ -6173,14 +6173,19 @@ async function runLongMemEvalSamplePipeline(
   event: MemoryEvent,
   llm: LlmFactFusionOptions | undefined,
   options: {
-    disableIngestLlm?: boolean;
-    allowLlmFallback?: boolean;
+    disableIngestLlm?: boolean;    allowLlmFallback?: boolean;
     skipStmAdmission?: boolean;
     trace?: LongMemEvalSampleTraceContext;
     stageAttempt?: number;
     sessionId?: string;
   } = {}
 ) {
+  // ponytail: stage retry attempt 间残留（facts+batch 已写、task 未成功）会让重试撞 fact batch 冲突；
+  // 每次 attempt 开始前级联清掉未完成残留
+  if (await hasMemoryEvent(repository, event.eventId) &&
+      !await hasCompletedMemoryEvent(repository, event.eventId)) {
+    await repository.deleteMemoryEventCascade(event.eventId, { recordChangeEvent: false });
+  }
   let task = createPipelineTask(event);
   const traceInput = {
     ...(options.trace ? { trace: options.trace } : {}),
@@ -6215,7 +6220,7 @@ async function runLongMemEvalSamplePipeline(
         ? {
             llm: {
               ...llm,
-              fallbackMode: options.disableIngestLlm === true || options.allowLlmFallback !== false ? "allow" : "throw",
+              fallbackMode: options.disableIngestLlm === true || options.allowLlmFallback === true ? "allow" : "throw",
               emptyFactsMode: "allow",
               semanticRetryMaxAttempts: 2
             }

@@ -1054,12 +1054,19 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     const existing = await this.getFactBatchCommitted(normalized.batchId);
     if (existing) {
       if (!sameFactBatchCommit(existing, normalized)) {
-        throw new FactBatchCommitError(
-          "FACT_BATCH_CONFLICT",
-          `Fact batch ${normalized.batchId} was already committed with different facts or scope.`
-        );
+        // ponytail: batchId 是 event 的确定性哈希，级联删除只清 facts 时 batch 会成孤儿，
+        // 重跑必撞同 ID。引用的 facts 已全部不存在的孤儿 batch 删除重建，不视为冲突。
+        if (this.getFactItemsByIds(existing.newFactIds).length > 0) {
+          throw new FactBatchCommitError(
+            "FACT_BATCH_CONFLICT",
+            `Fact batch ${normalized.batchId} was already committed with different facts or scope.`
+          );
+        }
+        removeWhere(this.cache.factBatches, (batch) => batch.batchId === normalized.batchId);
+        this.exec(`DELETE FROM fact_batches WHERE batch_id = ?`, [normalized.batchId]);
+      } else {
+        return existing;
       }
-      return existing;
     }
 
     const persistedFacts = await this.getFactItemsByIds(normalized.newFactIds);
@@ -4004,6 +4011,9 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       ? new DatabaseSync(sqlitePath, { readOnly: true })
       : new DatabaseSync(sqlitePath);
     this.db.exec("PRAGMA busy_timeout=5000;");
+    // ponytail: 一次性调大页缓存并开启 mmap，长跑评测的 9.9GB 库默认 2MB 缓存会 100% miss
+    this.db.exec("PRAGMA cache_size=-1048576;");
+    this.db.exec("PRAGMA mmap_size=8589934592;");
     if (!options.readOnly) {
       this.db.exec("PRAGMA journal_mode=WAL;");
       this.db.exec("PRAGMA foreign_keys=ON;");

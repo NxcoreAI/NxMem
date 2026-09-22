@@ -181,6 +181,40 @@ test("createFactsWithLlmFusion marks exhausted LongMemEval semantic retries as d
   }
 });
 
+test("createFactsWithLlmFusion treats exhausted semantic retries as empty facts instead of throwing", async () => {
+  const repository = new InMemoryContextEngineRepository();
+  const { event, segments } = buildFactFusionRetryFixture();
+  let calls = 0;
+
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return chatCompletion(JSON.stringify({ facts: [] }));
+    };
+
+    const result = await createFactsWithLlmFusion(repository, event, segments, {
+      apiKey: "test-key",
+      baseUrl: "http://localhost:1234",
+      model: "test-model",
+      fallbackMode: "throw",
+      emptyFactsMode: "allow",
+      semanticRetryMaxAttempts: 2
+    });
+
+    assert.equal(calls, 3);
+    assert.deepEqual(result.facts, []);
+    assert.equal(result.trace.fallbackReason, "semantic_retry_exhausted:llm_returned_no_valid_facts");
+    assert.equal(
+      result.rejectedSegments.some((item) =>
+        item.reason === "fallback_rejected:semantic_retry_exhausted:llm_returned_no_valid_facts"
+      ),
+      true
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createFactsWithLlmFusion accepts empty LongMemEval facts for non-durable user requests", async () => {
   const repository = new InMemoryContextEngineRepository();
   const { event, segments } = buildFactFusionRetryFixture();
@@ -498,7 +532,8 @@ test("createFactsWithLlmFusion falls back after five empty message responses", a
     const result = await createFactsWithLlmFusion(repository, event, segments, {
       apiKey: "test-key",
       baseUrl: "http://localhost:1234",
-      model: "test-model"
+      model: "test-model",
+      fallbackMode: "allow"
     });
 
     assert.equal(calls, 5);
@@ -708,7 +743,8 @@ test("createFactsWithLlmFusion splits oversized evidence into multiple LLM reque
     const result = await createFactsWithLlmFusion(repository, event, segments, {
       apiKey: "test-key",
       baseUrl: "http://localhost:1234",
-      model: "test-model"
+      model: "test-model",
+      fallbackMode: "allow"
     });
 
     assert.equal(calls.length > 1, true);
@@ -779,7 +815,8 @@ test("createFactsWithLlmFusion requests minimal sufficient facts with benchmark-
     await createFactsWithLlmFusion(repository, event, segments, {
       apiKey: "test-key",
       baseUrl: "http://localhost:1234",
-      model: "test-model"
+      model: "test-model",
+      fallbackMode: "allow"
     });
 
     const request = JSON.parse(requestBody) as { messages: Array<{ content: string }> };
