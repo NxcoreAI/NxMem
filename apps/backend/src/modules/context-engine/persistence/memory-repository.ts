@@ -8380,6 +8380,7 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
         AND fts.owner_type = 'fact'
         AND (? IS NULL OR fact.tenant_id = ?)
         AND (? IS NULL OR fact.principal_id = ?)
+        AND (? IS NULL OR fact.context_scope_id = ?)
         AND (? = 1 OR fact.status IN ('active', 'conflicted'))
       ORDER BY score DESC, factId
       LIMIT ?
@@ -8389,6 +8390,8 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       options.tenantId ?? null,
       options.principalId ?? null,
       options.principalId ?? null,
+      options.contextScopeId ?? null,
+      options.contextScopeId ?? null,
       options.includeInactive ? 1 : 0,
       options.limit ?? 100
     ).map((row) => normalizeRow(row) as { factId: string; score: number })
@@ -8404,12 +8407,15 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       WHERE v.owner_type = 'fact'
         AND (? IS NULL OR fact.tenant_id = ?)
         AND (? IS NULL OR fact.principal_id = ?)
+        AND (? IS NULL OR fact.context_scope_id = ?)
         AND (? = 1 OR fact.status IN ('active', 'conflicted'))
     `).all(
       options.tenantId ?? null,
       options.tenantId ?? null,
       options.principalId ?? null,
       options.principalId ?? null,
+      options.contextScopeId ?? null,
+      options.contextScopeId ?? null,
       options.includeInactive ? 1 : 0
     );
     return rows.flatMap((raw) => {
@@ -9478,6 +9484,7 @@ function expandSearchTokens(tokens: string[]) {
 function factMatchesIndexQuery(fact: FactItem, query: FactIndexSearchQuery) {
   return (!query.tenantId || fact.tenantId === query.tenantId) &&
     (!query.principalId || fact.principalId === query.principalId) &&
+    (!query.contextScopeId || fact.contextScopeId === query.contextScopeId) &&
     (query.includeInactive || fact.status === "active" || fact.status === "conflicted") &&
     fact.accessState !== "permission-invalid";
 }

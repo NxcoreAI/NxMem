@@ -652,6 +652,7 @@ async function retrieveFactCandidates(
   const searchOptions = {
     ...(query.tenantId ? { tenantId: query.tenantId } : {}),
     ...(query.principalId ? { principalId: query.principalId } : {}),
+    ...(query.contextScopeId ? { contextScopeId: query.contextScopeId } : {}),
     ...(query.includeInactive ? { includeInactive: true } : {}),
     limit: 100
   };

@@ -150,6 +150,7 @@ export interface TextIndexSearchHit {
 export interface FactIndexSearchQuery {
   tenantId?: string;
   principalId?: string;
+  contextScopeId?: string;
   includeInactive?: boolean;
   limit?: number;
 }
