@@ -3176,7 +3176,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
       )
       .map((edge) => edge.edgeId);
     const deletedPackTraceIds = this.cache.packTraces
-      .filter((trace) => trace.selectedItemIds.some((itemId) => deletedFactIds.includes(itemId) || deletedShortTermIds.includes(itemId) || deletedLongTermIds.includes(itemId)))
+      .filter((trace) => (trace.selectedItemIds ?? []).some((itemId) => deletedFactIds.includes(itemId) || deletedShortTermIds.includes(itemId) || deletedLongTermIds.includes(itemId)))
       .map((trace) => trace.traceId);
     const deletedLlmTraceIds = this.cache.llmFactFusionTraces.filter((trace) => trace.eventId === eventId).map((trace) => trace.traceId);
     const deletedLlmStmAdmissionTraceIds = this.cache.llmStmAdmissionTraces.filter((trace) => trace.eventId === eventId).map((trace) => trace.traceId);
@@ -3244,7 +3244,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
       deletedLongTermIds.includes(edge.fromId) ||
       deletedLongTermIds.includes(edge.toId)
     );
-    removeWhere(this.cache.packTraces, (trace) => trace.selectedItemIds.some((itemId) => deletedFactIds.includes(itemId) || deletedShortTermIds.includes(itemId) || deletedLongTermIds.includes(itemId)));
+    removeWhere(this.cache.packTraces, (trace) => (trace.selectedItemIds ?? []).some((itemId) => deletedFactIds.includes(itemId) || deletedShortTermIds.includes(itemId) || deletedLongTermIds.includes(itemId)));
     removeWhere(this.cache.llmFactFusionTraces, (trace) => trace.eventId === eventId);
     removeWhere(this.cache.llmStmAdmissionTraces, (trace) => trace.eventId === eventId);
     removeWhere(this.cache.llmDreamingTraces, (trace) => trace.sourceMemoryDataIds.some((memoryDataId) => deletedShortTermIds.includes(memoryDataId)) || trace.parsedMemories.some((memory) => deletedLongTermIds.includes(memory.memoryId)));

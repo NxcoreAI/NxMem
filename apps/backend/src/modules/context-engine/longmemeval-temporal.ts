@@ -253,8 +253,11 @@ function resolveNamedMonthOrDate(text: string, evidenceTime: string) {
   const month = months[match[1].toLocaleLowerCase()];
   if (month === undefined) return undefined;
   const reference = new Date(evidenceTime);
-  const year = match[3] ? Number(match[3]) : reference.getUTCFullYear();
+  let year = match[3] ? Number(match[3]) : reference.getUTCFullYear();
   const day = match[2] ? Number(match[2]) : 1;
+  // ponytail: 无显式年份时对齐过去推断(>31 天的未来才回退一年,容忍近期日期)——
+  // "December 12" 相对 evidence 2023-02 曾被补成 2023-12(未来),时间窗过滤直接丢证据
+  if (!match[3] && Date.UTC(year, month, day) - reference.getTime() > 31 * 86_400_000) year -= 1;
   const value = new Date(Date.UTC(year, month, day));
   if (value.getUTCFullYear() !== year || value.getUTCMonth() !== month || value.getUTCDate() !== day) {
     return undefined;
@@ -391,9 +394,11 @@ function readNumericMonthDay(text: string, evidenceTime: string) {
   const match = text.match(/(?<!\d)(1[0-2]|0?[1-9])\s*\/\s*(3[01]|[12]\d|0?[1-9])(?:\s*\/\s*(\d{4}))?(?!\d)/u);
   if (!match) return undefined;
   const evidenceDate = new Date(evidenceTime);
-  const year = match[3] ? Number(match[3]) : evidenceDate.getUTCFullYear();
+  let year = match[3] ? Number(match[3]) : evidenceDate.getUTCFullYear();
   const month = Number(match[1]);
   const day = Number(match[2]);
+  // 同 resolveNamedMonthOrDate:无年份且落在 evidence 31 天之后的日期回退一年
+  if (!match[3] && Date.UTC(year, month - 1, day) - evidenceDate.getTime() > 31 * 86_400_000) year -= 1;
   const date = new Date(Date.UTC(year, month - 1, day));
   if (
     date.getUTCFullYear() !== year ||

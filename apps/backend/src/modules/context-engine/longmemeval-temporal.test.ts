@@ -72,6 +72,21 @@ test("LongMemEval resolves standalone month anchors using the evidence year", ()
   });
 });
 
+test("LongMemEval yearless dates after evidence time fall back to previous year", () => {
+  assert.equal(resolveLongMemEvalTimeAnchor({
+    evidenceTime: "2023-02-26T11:52:00.000Z",
+    timeAnchor: "December 12"
+  }).validTime, "2022-12-12T00:00:00.000Z");
+  assert.equal(resolveLongMemEvalTimeAnchor({
+    evidenceTime: "2023-02-26T11:52:00.000Z",
+    timeAnchor: "12/12"
+  }).validTime, "2022-12-12T00:00:00.000Z");
+  assert.equal(resolveLongMemEvalTimeAnchor({
+    evidenceTime: "2023-02-26T11:52:00.000Z",
+    timeAnchor: "January 5"
+  }).validTime, "2023-01-05T00:00:00.000Z");
+});
+
 test("LongMemEval resolves weekend anchors as explicit intervals", () => {
   const temporal = resolveLongMemEvalTimeAnchor({
     evidenceTime: "2023-10-15T19:23:00.000Z",

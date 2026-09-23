@@ -9,6 +9,17 @@ import { multimodalContentToText } from "./memory-event-fields.js";
 
 const originalFetch = globalThis.fetch;
 
+test("createFactsWithLlmFusion skips facts instead of storing raw segments when llm is disabled", async () => {
+  const repository = new InMemoryContextEngineRepository();
+  const { event, segments } = buildFactFusionRetryFixture();
+  const result = await createFactsWithLlmFusion(repository, event, segments, {
+    fallbackMode: "allow",
+    emptyFactsMode: "allow"
+  });
+  assert.equal(result.facts.length, 0);
+  assert.equal(result.rejectedSegments.some((item) => item.reason === "skipped:missing_api_key"), true);
+});
+
 function buildFactFusionRetryFixture() {
   const event: MemoryEvent = {
     eventId: `event_${randomUUID()}`,
@@ -169,10 +180,10 @@ test("createFactsWithLlmFusion marks exhausted LongMemEval semantic retries as d
 
     assert.equal(calls, 3);
     assert.equal(result.trace.fallbackReason, "semantic_retry_exhausted:llm_returned_no_valid_facts");
-    assert.match(result.facts[0]?.factId ?? "", /^fact_seg_/u);
+    assert.equal(result.facts.length, 0);
     assert.equal(
       result.rejectedSegments.some((item) =>
-        item.reason === "fallback:semantic_retry_exhausted:llm_returned_no_valid_facts"
+        item.reason === "skipped:semantic_retry_exhausted:llm_returned_no_valid_facts"
       ),
       true
     );
@@ -538,7 +549,11 @@ test("createFactsWithLlmFusion falls back after five empty message responses", a
 
     assert.equal(calls, 5);
     assert.equal(result.trace.fallbackReason, "llm_error:empty_message_content");
-    assert.equal(result.facts[0]?.factId, `fact_${segments[0]!.segmentId}`);
+    assert.equal(result.facts.length, 0);
+    assert.equal(
+      result.rejectedSegments.some((item) => item.reason === "skipped:llm_error:empty_message_content"),
+      true
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1470,3 +1485,75 @@ function buildTemporalTestSegments(event: MemoryEvent): ParsedSegment[] {
     confidence: "medium"
   }];
 }
+
+test("createFactsWithLlmFusion salvages innocent segments when the batch response is blocked", async () => {
+  const repository = new InMemoryContextEngineRepository();
+  const event: MemoryEvent = {
+    eventId: `event_${randomUUID()}`,
+    contextScopeId: "longmemeval:scope_batch_split",
+    eventType: "longmemeval_session",
+    eventDescription: "session",
+    eventTime: "2025-01-01T00:00:00.000Z",
+    sourceApp: "longmemeval",
+    sourceId: "source",
+    permissionSnapshot: {
+      snapshotId: `ps_${randomUUID()}`,
+      tenantId: "tenant",
+      principalId: "principal",
+      sourceAclVersion: "v1",
+      visibility: "private"
+    },
+    multimodalData: [
+      { itemId: "item1", type: "text", format: "plain", content: "user: I adopted a cat named Whiskers.", ref: "item1", timeBasis: "source_time", timeConfidence: "high" },
+      { itemId: "item2", type: "text", format: "plain", content: "user: My lizard Mango eats crickets.", ref: "item2", timeBasis: "source_time", timeConfidence: "high" }
+    ],
+    sourceRefs: [{ sourceRefId: "src1", sourceType: "agent_memory", sourceId: "source" }]
+  };
+  const segments: ParsedSegment[] = event.multimodalData.map((item) => ({
+    segmentId: `seg_${event.eventId}_${item.itemId}`,
+    eventId: event.eventId,
+    modality: "text",
+    content: multimodalContentToText(item.content),
+    status: "parsed",
+    confidence: "high"
+  }));
+
+  const blocked = () => new Response(JSON.stringify({
+    error: { message: "InternalError.Algo.DataInspectionFailed: Output data inspection failed", code: "InternalError.Algo.DataInspectionFailed" }
+  }), { status: 400, headers: { "content-type": "application/json" } });
+
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const body = String(init?.body ?? "");
+      if (body.includes("Mango")) return blocked();
+      return chatCompletion(JSON.stringify({
+        facts: [{
+          factType: "event",
+          timeAnchor: null,
+          factText: "The user adopted a cat named Whiskers.",
+          normalizedClaim: "the user adopted a cat named whiskers",
+          confidenceLevel: "high",
+          linkedSegmentIds: [segments[0]!.segmentId]
+        }]
+      }));
+    };
+
+    const result = await createFactsWithLlmFusion(repository, event, segments, {
+      apiKey: "test-key",
+      baseUrl: "http://localhost:1234",
+      model: "test-model",
+      fallbackMode: "throw"
+    });
+
+    assert.equal(result.facts.length, 1);
+    assert.match(result.facts[0]!.factText, /Whiskers/);
+    assert.equal(
+      result.rejectedSegments.some((item) =>
+        item.segmentId === segments[1]!.segmentId && item.reason.startsWith("skipped:llm_error:")
+      ),
+      true
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

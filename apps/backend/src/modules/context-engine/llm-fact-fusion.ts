@@ -7,7 +7,6 @@ import type {
 } from "./domain.js";
 import { getContextEngineConfig } from "../../config.js";
 import {
-  createFactsFromParsedSegments,
   findSourceItem,
   fuseFactTime,
   normalizeClaim,
@@ -156,9 +155,13 @@ export async function createFactsWithLlmFusion(
         options.batchConcurrency ?? process.env.CONTEXT_FACT_FUSION_BATCH_CONCURRENCY,
         DEFAULT_FACT_FUSION_BATCH_CONCURRENCY
       );
-      const batchResponses = await mapConcurrent(batches, batchConcurrency, async (batch, index) => {
+      const runEvidenceBatch = async (
+        rows: typeof alignedEvidence,
+        logIndex: number,
+        batchCount: number
+      ) => {
         const batchPrompt = [
-          buildFactFusionPrompt(event, batch),
+          buildFactFusionPrompt(event, rows),
           options.semanticRetryInstruction?.trim()
         ].filter(Boolean).join("\n\n");
         let retryReason: string | undefined;
@@ -173,14 +176,14 @@ export async function createFactsWithLlmFusion(
             ...(options.observer ? { observer: options.observer } : {}),
             ...(options.signal ? { signal: options.signal } : {}),
             logContext: {
-              batchIndex: index + 1,
-              batchCount: batches.length,
+              batchIndex: logIndex,
+              batchCount,
               ...(attempt > 1 ? { retry: attempt - 1, retryReason } : {})
             }
           });
           try {
             const parsed = parseFactFusionResponse(batchResponse);
-            const conversion = convertLlmFacts(event, batch, parsed);
+            const conversion = convertLlmFacts(event, rows, parsed);
             return {
               batchResponse,
               conversion,
@@ -196,7 +199,33 @@ export async function createFactsWithLlmFusion(
           }
         }
         throw new Error("fact_fusion_parse_retry_exhausted");
+      };
+      const batchOutcomes = await mapConcurrent(batches, batchConcurrency, async (batch, index) => {
+        try {
+          return { results: [await runEvidenceBatch(batch, index + 1, batches.length)], skipped: [] as LlmFactFusionResult["rejectedSegments"] };
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
+          if (isLlmRequestRetryExhausted(error)) throw error;
+          if (batch.length <= 1) throw error;
+          // ponytail: 批级失败(内容审核拦的是整批响应)拆成单 segment 重试,毒 segment 单独跳过,无辜 segment 照常抽取
+          const singles = await Promise.all(batch.map(async (row) => {
+            try {
+              return { ok: true as const, value: await runEvidenceBatch([row], index + 1, batches.length) };
+            } catch (singleError) {
+              if (options.signal?.aborted) throw singleError;
+              if (isLlmRequestRetryExhausted(singleError)) throw singleError;
+              return { ok: false as const, error: singleError };
+            }
+          }));
+          const results = singles.flatMap((single) => single.ok ? [single.value] : []);
+          if (!results.length) throw error;
+          const skipped = singles.flatMap((single, i) => !single.ok
+            ? [{ segmentId: batch[i]!.segmentId, reason: `skipped:llm_error:${single.error instanceof Error ? single.error.message.slice(0, 120) : "unknown"}` }]
+            : []);
+          return { results, skipped };
+        }
       });
+      const batchResponses = batchOutcomes.flatMap((outcome) => outcome.results);
 
       const seenFacts = new Set<string>();
       let hasExplicitEmptyFacts = false;
@@ -215,6 +244,11 @@ export async function createFactsWithLlmFusion(
           seenRejectedSegments.add(dedupeKey);
           rejectedSegments.push(item);
         }
+      }
+      for (const item of batchOutcomes.flatMap((outcome) => outcome.skipped)) {
+        if (seenRejectedSegments.has(`${item.segmentId}|${item.reason}`)) continue;
+        seenRejectedSegments.add(`${item.segmentId}|${item.reason}`);
+        rejectedSegments.push(item);
       }
       facts = retainValidLlmFacts(facts, rejectedSegments);
       rawResponse = batchResponses.length === 1 ? batchResponses[0]!.batchResponse : batchResponses.map(({ batchResponse }) => batchResponse);
@@ -270,19 +304,12 @@ export async function createFactsWithLlmFusion(
   }
 
   if (fallbackReason && !shouldThrowOnFallback) {
-    const fallback = createFactsFromParsedSegments(event, segments);
-    const englishFallback = fallback.facts.filter((fact) => !englishCanonicalFactValidationError(fact.factText, fact.normalizedClaim));
-    const nonEnglishFallback = fallback.facts
-      .filter((fact) => englishCanonicalFactValidationError(fact.factText, fact.normalizedClaim))
-      .map((fact) => ({ segmentId: fact.linkedSegmentIds[0] ?? fact.factId, reason: "fallback_fact_must_be_english" }));
-    facts = englishFallback;
+    // ponytail: LLM 失败的 segment 一律跳过，绝不裸抄原文入库（裸抄无 valid_time/实体，污染 fact 层）
     rejectedSegments = [
       ...rejectedSegments,
-      ...fallback.rejectedSegments,
-      ...nonEnglishFallback,
       ...alignedEvidence.map((row) => ({
         segmentId: row.segmentId,
-        reason: `fallback:${fallbackReason}`
+        reason: `skipped:${fallbackReason}`
       }))
     ];
   } else if (fallbackReason) {

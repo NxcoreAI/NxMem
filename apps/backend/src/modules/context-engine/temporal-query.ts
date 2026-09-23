@@ -532,17 +532,28 @@ function parseExplicitLocalDate(text: string, referenceDate: LocalDate): LocalDa
 
   const chinese = text.match(/(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/u);
   if (chinese) {
-    return validLocalDate(Number(chinese[1] ?? referenceDate.year), Number(chinese[2]), Number(chinese[3]));
+    // ponytail: 无年份的日期按过去推断——"12月12日" 相对 reference 2 月曾补成今年 12 月(未来),
+    // 时间窗过滤会直接丢证据;显式带年份不回退
+    return yearlessPastLocalDate(Number(chinese[1] ?? referenceDate.year), Number(chinese[2]), Number(chinese[3]), referenceDate, Boolean(chinese[1]));
   }
 
   const english = text.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/iu);
   if (english) {
     const month = englishMonthNumber(english[1]);
     return month
-      ? validLocalDate(Number(english[3] ?? referenceDate.year), month, Number(english[2]))
+      ? yearlessPastLocalDate(Number(english[3] ?? referenceDate.year), month, Number(english[2]), referenceDate, Boolean(english[3]))
       : undefined;
   }
   return undefined;
+}
+
+function yearlessPastLocalDate(year: number, month: number, day: number, referenceDate: LocalDate, hasExplicitYear: boolean): LocalDate | undefined {
+  const candidate = validLocalDate(year, month, day);
+  if (!candidate) return undefined;
+  if (hasExplicitYear) return candidate;
+  const daysAhead = (Date.UTC(candidate.year, candidate.month - 1, candidate.day) - Date.UTC(referenceDate.year, referenceDate.month - 1, referenceDate.day)) / 86_400_000;
+  // ponytail: 无年份日期按过去推断,但留 31 天容忍——"8月1日"相对 7/25 说的是下周,不是去年 8 月
+  return daysAhead > 31 ? validLocalDate(year - 1, month, day) : candidate;
 }
 
 function englishMonthNumber(value: string | undefined) {
