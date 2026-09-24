@@ -4145,18 +4145,25 @@ function longMemEvalAnswerCandidateHasTemporalEvidence(candidate: LongMemEvalAns
   return Boolean(candidate.temporal.validTime || candidate.temporal.evidenceTime || candidate.temporal.events?.length);
 }
 
-function compareLongMemEvalAnswerCandidatesByReranker(
+// ponytail: rerank HTTP API 分数在小数第 6 位浮点抖动,严格不等比较会让近并列证据顺序漂移
+// (pack 截断边界翻转 → LLM 答案波动),量化到万分位消除
+function quantizeRerankerScore(score: number) {
+  return Math.round(score * 10_000);
+}
+
+export function compareLongMemEvalAnswerCandidatesByReranker(
   left: LongMemEvalAnswerEvidenceCandidate,
   right: LongMemEvalAnswerEvidenceCandidate
 ) {
   const leftRerankerScore = left.scoreBreakdown.reranker;
   const rightRerankerScore = right.scoreBreakdown.reranker;
   if (leftRerankerScore !== undefined && rightRerankerScore !== undefined) {
-    const rerankerOrder = rightRerankerScore - leftRerankerScore;
+    const rerankerOrder = quantizeRerankerScore(rightRerankerScore) - quantizeRerankerScore(leftRerankerScore);
     if (rerankerOrder) return rerankerOrder;
   }
   return right.relevanceScore - left.relevanceScore ||
-    (rightRerankerScore ?? right.item.score) - (leftRerankerScore ?? left.item.score) ||
+    (rightRerankerScore !== undefined ? quantizeRerankerScore(rightRerankerScore) : right.item.score) -
+      (leftRerankerScore !== undefined ? quantizeRerankerScore(leftRerankerScore) : left.item.score) ||
     right.item.score - left.item.score ||
     left.item.id.localeCompare(right.item.id);
 }

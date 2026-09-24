@@ -6515,3 +6515,27 @@ test("evaluateLongMemEvalDataset reads the repository dataset fixture", async ()
   assert.equal(report.metrics[1] !== undefined, true);
   assert.equal(report.metrics[5] !== undefined, true);
 });
+
+test("reranker comparator ignores sub-ten-thousandth float jitter and falls back to id order", async () => {
+  const { compareLongMemEvalAnswerCandidatesByReranker } = await import("./longmemeval.js");
+  const base: LongMemEvalAnswerEvidenceCandidate = {
+    item: { id: "item_b", score: 0.5 } as LongMemEvalAnswerEvidenceCandidate["item"],
+    scoreBreakdown: { vector: 0.5, fts: 0.5 } as LongMemEvalAnswerEvidenceCandidate["scoreBreakdown"],
+    sourceSessionIds: [],
+    sourceRoles: [],
+    temporal: {},
+    relations: [],
+    facts: [],
+    evidenceText: "",
+    relevanceScore: 0.5,
+    estimatedTokens: 1
+  };
+  const jitterA = { ...base, scoreBreakdown: { ...base.scoreBreakdown, reranker: 0.87123456 } };
+  const jitterB = { ...base, scoreBreakdown: { ...base.scoreBreakdown, reranker: 0.87123489 } };
+  // 万分位以下抖动 → 视为并列,落到 item.id 稳定排序
+  assert.equal(compareLongMemEvalAnswerCandidatesByReranker(jitterA, jitterB) > 0, true);
+  assert.equal(compareLongMemEvalAnswerCandidatesByReranker(jitterB, jitterA) < 0, true);
+  // 万分位以上差异仍生效
+  const higher = { ...base, scoreBreakdown: { ...base.scoreBreakdown, reranker: 0.8713 } };
+  assert.equal(compareLongMemEvalAnswerCandidatesByReranker(jitterB, higher) > 0, true);
+});

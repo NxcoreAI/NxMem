@@ -50,7 +50,7 @@ test("rejects a batch until every referenced fact is persisted", async () => {
   assert.deepEqual(repository.getDebugSnapshot().factBatches, []);
 });
 
-test("reuses an identical commit and rejects changed content for the same stable batch", async () => {
+test("reuses an identical commit and replaces changed content for the same stable batch", async () => {
   const repository = new InMemoryContextEngineRepository();
   await repository.saveFactItem(fact("fact_1"));
   await repository.saveFactItem(fact("fact_2"));
@@ -65,12 +65,11 @@ test("reuses an identical commit and rejects changed content for the same stable
   assert.equal(repeated.committedAt, firstCommittedAt);
   assert.equal(repository.getDebugSnapshot().factBatches?.length, 1);
 
-  await assert.rejects(
-    repository.saveFactBatchCommitted(eventBatch(["fact_1", "fact_2"])),
-    (error: unknown) => error instanceof FactBatchCommitError &&
-      error.code === "FACT_BATCH_CONFLICT"
-  );
+  const replaced = await repository.saveFactBatchCommitted(eventBatch(["fact_1", "fact_2"]));
+
+  assert.deepEqual(replaced.newFactIds, ["fact_1", "fact_2"]);
   assert.equal(repository.getDebugSnapshot().factBatches?.length, 1);
+  assert.deepEqual(repository.getDebugSnapshot().factBatches?.[0]?.newFactIds, ["fact_1", "fact_2"]);
 });
 
 test("persists batches across SQLite restart and supports uncached reads", async () => {

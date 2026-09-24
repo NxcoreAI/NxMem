@@ -1054,14 +1054,9 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     const existing = await this.getFactBatchCommitted(normalized.batchId);
     if (existing) {
       if (!sameFactBatchCommit(existing, normalized)) {
-        // ponytail: batchId 是 event 的确定性哈希，级联删除只清 facts 时 batch 会成孤儿，
-        // 重跑必撞同 ID。引用的 facts 已全部不存在的孤儿 batch 删除重建，不视为冲突。
-        if (this.getFactItemsByIds(existing.newFactIds).length > 0) {
-          throw new FactBatchCommitError(
-            "FACT_BATCH_CONFLICT",
-            `Fact batch ${normalized.batchId} was already committed with different facts or scope.`
-          );
-        }
+        // ponytail: batchId 是 (trigger,tenant,principal,scope,sourceKey) 的哈希，同 ID 不同 facts
+        // 必然是同源重灌（级联删除可能漏删被 timeline 聚合改写 linkedEventIds 的 facts 及其 batch 行），
+        // 一律删旧重建，不视为冲突
         removeWhere(this.cache.factBatches, (batch) => batch.batchId === normalized.batchId);
         this.exec(`DELETE FROM fact_batches WHERE batch_id = ?`, [normalized.batchId]);
       } else {
