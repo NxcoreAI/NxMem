@@ -105,9 +105,10 @@ class FactFusionResponseParseError extends Error {
   }
 }
 
-const promptVersion = "fact-fusion.openai-compatible.v11";
+const promptVersion = "fact-fusion.openai-compatible.v12";
 const factSchemaVersion = "fact-item.v1";
 const DEFAULT_FACT_FUSION_BATCH_TOKEN_BUDGET = 12000;
+const DEFAULT_FACT_FUSION_BATCH_OVERLAP_ROWS = 0;
 const DEFAULT_FACT_FUSION_BATCH_CONCURRENCY = 20;
 const DEFAULT_FACT_FUSION_PARSE_MAX_ATTEMPTS = 2;
 const DEFAULT_FACT_FUSION_EMPTY_CONTENT_MAX_ATTEMPTS = 5;
@@ -150,7 +151,15 @@ export async function createFactsWithLlmFusion(
     fallbackReason = "no_parsed_evidence";
   } else {
     try {
-      const batches = chunkAlignedEvidence(alignedEvidence, DEFAULT_FACT_FUSION_BATCH_TOKEN_BUDGET);
+      const batchTokenBudget = readPositiveInteger(
+        process.env.CONTEXT_FACT_FUSION_BATCH_TOKEN_BUDGET,
+        DEFAULT_FACT_FUSION_BATCH_TOKEN_BUDGET
+      );
+      const batchOverlapRows = readNonNegativeInteger(
+        process.env.CONTEXT_FACT_FUSION_BATCH_OVERLAP_ROWS,
+        DEFAULT_FACT_FUSION_BATCH_OVERLAP_ROWS
+      );
+      const batches = chunkAlignedEvidence(alignedEvidence, batchTokenBudget, batchOverlapRows);
       const batchConcurrency = readPositiveInteger(
         options.batchConcurrency ?? process.env.CONTEXT_FACT_FUSION_BATCH_CONCURRENCY,
         DEFAULT_FACT_FUSION_BATCH_CONCURRENCY
@@ -477,7 +486,9 @@ function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvide
         `factType 只能是以下枚举之一：${LONGMEMEVAL_FACT_TYPES.join(" | ")}。不得创造新类型或使用 assistant_ 前缀。`,
         "抽取对话中的所有独立原子事实，完整覆盖复合句、并列句及附带信息，并在主语可由上下文明确推断时补全主语而非跳过。",
         "facts 必须按照 Session 原文顺序排列：从上到下遍历 message，同一 message 内从前到后排列事实。factSequence 必须等于 facts 数组中的一基位置，即从 1 开始连续递增，不得重复或跳号。",
-        "timeAnchor 为可选的时间表达提示；能可靠识别时返回原始时间表达，否则返回 null。不要为了 timeAnchor 改写、删减或放弃事实。不要计算或输出 evidenceTime、validTime、validTimeStart、validTimeEnd、timeBasis 或 timeConfidence。",
+        "相对时间解析（必须）：当陈述包含 today/yesterday/last week/a few days ago 等相对时间表达时，必须结合 event.eventTime 将其换算为绝对日期，并把该绝对日期写入 factText（例如 'On 2026-03-20, the user read ...'）。注意区分事件发生时间与消息记录时间：陈述中的 today 指消息发出当天。无法确定时在 factText 中注明 'exact date unclear'，不得编造日期。",
+        "timeAnchor 填写动作发生时间的绝对日期（YYYY-MM-DD），以 event.eventTime 为基准换算相对时间表达；原文中的其它日期名词（如刊物期号、节日名、文章标题中的日期）不是事件发生时间，不得作为 timeAnchor。无法可靠确定时返回 null。不要输出 evidenceTime、validTime、validTimeStart、validTimeEnd、timeBasis 或 timeConfidence 等结构化时间字段。",
+        "列表边界判定（本条优先于任何主题级合并规则）：assistant 回答中的编号/并列列表，当普通并列列表中的各项属于同一主题、且没有各自独立的条件、数值或解释时，普通并列列表应按共同主题合并为一条事实；只有列表项包含可独立检索的重要细节（材料、工具、做法、参数、具体名称）时才拆分——每一项单独成为一条事实并保留该项全部关键细节。例如 assistant 列出 5 个回收材料 DIY 项目、每项含材料与做法（如 'Newspaper Flower Vase - Seal the vase with Mod Podge or another sealant to make it water-resistant'）时，各项含独立的材料与做法细节，必须拆成 5 条事实分别保留（含 Mod Podge 密封细节），不得合并为主题级概括，也不得只抽取部分项目。",
         "一个 fact 只能描述一个独立事件及其时间锚点。若一句话包含多个分别带时间的事件，必须拆成多个 fact；from/to 等描述同一持续区间的完整表达可以作为一个 timeAnchor。"
       ] : [])
     ],
@@ -512,7 +523,11 @@ function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvide
   return JSON.stringify(payload, null, 2);
 }
 
-function chunkAlignedEvidence(alignedEvidence: AlignedEvidenceRow[], maxTokens: number): AlignedEvidenceRow[][] {
+function chunkAlignedEvidence(
+  alignedEvidence: AlignedEvidenceRow[],
+  maxTokens: number,
+  overlapRows = 0
+): AlignedEvidenceRow[][] {
   const batches: AlignedEvidenceRow[][] = [];
   let current: AlignedEvidenceRow[] = [];
   let currentTokens = 0;
@@ -521,8 +536,9 @@ function chunkAlignedEvidence(alignedEvidence: AlignedEvidenceRow[], maxTokens: 
     const tokenCost = estimateAlignedEvidenceTokens(row);
     if (current.length && currentTokens + tokenCost > maxTokens) {
       batches.push(current);
-      current = [];
-      currentTokens = 0;
+      const overlap = overlapRows > 0 ? current.slice(-overlapRows) : [];
+      current = [...overlap];
+      currentTokens = overlap.reduce((sum, row) => sum + estimateAlignedEvidenceTokens(row), 0);
     }
     current.push(row);
     currentTokens += tokenCost;
@@ -978,6 +994,11 @@ async function mapConcurrent<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+function readNonNegativeInteger(value: number | string | undefined, fallback: number) {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 function readPositiveInteger(value: number | string | undefined, fallback: number) {
