@@ -4,6 +4,7 @@ import type { ContextSearchResult } from "./search-context.js";
 import { isAffectiveShortTermMemory } from "./memory-region.js";
 
 export const STANDING_AFFECTIVE_LIMIT = 10;
+export const STANDING_AFFECTIVE_REASON = "standing_affective_injection";
 
 // 情感脑区不等待 reinforcement：candidate_queue（79% 的偏好 STM 停留态）同样参与常驻注入。
 // ponytail: 若 candidate_queue 噪声过大，再按 observeCount/准入分过滤。
@@ -58,7 +59,7 @@ export function standingShortTermSearchResult(memory: ShortTermMemory): ContextS
     ...(memory.memoryType !== undefined ? { memoryType: memory.memoryType } : {}),
     status: memory.lifecycleStatus,
     score: 0,
-    reason: "standing_affective_injection",
+    reason: STANDING_AFFECTIVE_REASON,
     sourceRefs: memory.sourceRefs,
     factIds: memory.sourceFactIds,
     factContext: { currentFacts: [], sourceFacts: [], conflicts: [] },

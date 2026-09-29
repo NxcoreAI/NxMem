@@ -11,7 +11,8 @@ import {
 } from "./search-context.js";
 import {
   collectStandingAffectiveStmMemories,
-  standingShortTermSearchResult
+  standingShortTermSearchResult,
+  STANDING_AFFECTIVE_REASON
 } from "./standing-affective.js";
 import { estimateContextTokens } from "./token-estimator.js";
 
@@ -53,6 +54,7 @@ export interface BenchmarkAnswerContextInput {
   resolveSessionId?: (source: SourceRef) => string | undefined;
   /** 双脑区：注入 scope 内当前偏好/反馈类 STM 作为常驻证据，默认开启。 */
   standingAffectiveInjection?: boolean;
+  graphNeighborRecall?: boolean;
 }
 
 export interface BenchmarkAnswerEvidenceCandidate {
@@ -66,6 +68,7 @@ export interface BenchmarkAnswerEvidenceCandidate {
   evidenceText: string;
   relevanceScore: number;
   estimatedTokens: number;
+  standing?: boolean;
 }
 
 export interface BenchmarkAnswerEvidenceRejection {
@@ -106,7 +109,8 @@ export async function buildBenchmarkAnswerContext(
     contextScopeId: input.contextScopeId,
     ...(input.referenceTime ? { referenceTime: input.referenceTime } : {}),
     ...(input.timezone ? { timezone: input.timezone } : {}),
-    ...(input.includeInactive !== undefined ? { includeInactive: input.includeInactive } : {})
+    ...(input.includeInactive !== undefined ? { includeInactive: input.includeInactive } : {}),
+    ...(input.graphNeighborRecall ? { graphNeighborRecall: true } : {})
   }, {
     recordRetrieval: false,
     factRetrieval: input.factRetrieval ?? input.allowedLayers.includes("fact"),
@@ -208,7 +212,8 @@ async function buildCandidates(
       facts: itemFacts,
       evidenceText,
       relevanceScore: relevance(input.question, evidenceText),
-      estimatedTokens: 0
+      estimatedTokens: 0,
+      ...(result.reason === STANDING_AFFECTIVE_REASON ? { standing: true } : {})
     };
     candidate.estimatedTokens = estimateContextTokens(renderItem(candidate, 1));
     return candidate;
@@ -293,10 +298,17 @@ export function renderBenchmarkAnswerContext(
   temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }
 ) {
   const indexes = new Map<string, number>();
-  const ordered = orderCandidatesForQuestion(candidates, questionType, question);
-  ordered.forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
-  return [renderHeader(questionType, question, referenceTime, packId, temporal), ...(ordered.length
-    ? ordered.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"])].join("\n");
+  const standingCandidates = candidates.filter((candidate) => candidate.standing);
+  const ordered = orderCandidatesForQuestion(candidates.filter((candidate) => !candidate.standing), questionType, question);
+  [...ordered, ...standingCandidates].forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
+  return [
+    renderHeader(questionType, question, referenceTime, packId, temporal),
+    ...(ordered.length
+      ? ordered.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"]),
+    ...(standingCandidates.length
+      ? ["【用户偏好（情感脑区常驻记忆，未经问题相关性排序）】", ...standingCandidates.map((candidate, index) => renderItem(candidate, ordered.length + index + 1, indexes))]
+      : [])
+  ].join("\n");
 }
 
 // 多证据聚合辅助：时间题把证据按发生时间排成时间线，计算/求和题按来源会话分组——
@@ -362,7 +374,7 @@ function renderHeader(
 ) {
   const note = arrangementNote(type, question);
   const conversion = temporalConversionNote(temporal);
-  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : []), ...(note ? [note] : []), ...(conversion ? [conversion] : [])].join("\n");
+  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数：同一事件在不同会话的重复陈述（同一物品+同一相对时间，如两处都说 last Thursday 烤了饼干）只算一次；问题限定原因或属性时，未注明原因的同类事件也计入；先穷举证据中所有同类候选（含不同会话提到的），逐条列出后再数，不要以『通用/非专用』为由主观排除；事件时间的相对表述（last month/last week 等）按证据发生时间换算后倾向计入问题时间窗口。"] : []), ...(note ? [note] : []), ...(conversion ? [conversion] : [])].join("\n");
 }
 
 // 相对日期换算：把问题里 "last Saturday"/"two weeks ago" 解析出的具体日期直接告诉模型，
@@ -450,7 +462,7 @@ function candidateTime(candidate: BenchmarkAnswerEvidenceCandidate) { return can
 function hasTemporal(candidate: BenchmarkAnswerEvidenceCandidate) { return Boolean(candidate.temporal.validTime || candidate.temporal.validTimeStart || candidate.temporal.evidenceTime || candidate.temporal.events?.length); }
 function needsTemporal(type: string, question: string) { return type.includes("temporal") || /\b(?:when|date|time|before|after|earlier|later|first|last|how long|ago|year|month|week|day)\b/iu.test(question); }
 function needsCalculation(type: string, question: string) { return type.includes("multi-session") && /\b(?:how many|how much|total|sum|difference|cost|spent|amount|count|number|combined|altogether)\b/iu.test(question) || /\b(?:how many|how much|total|sum|difference|combined|altogether)\b/iu.test(question); }
-function needsCount(type: string, question: string) { return type.includes("multi-session") && (/\b(?:how often|times?|occasions?|instances?)\b/iu.test(question) || /\bhow many\b.{0,80}\b(?:did|have|was|were)\s+i\b/iu.test(question) || /\bnumber of\b.{0,40}\b(?:events?|visits?|trips?|purchases?|appointments?)\b/iu.test(question)); }
+function needsCount(type: string, question: string) { return type.includes("multi-session") && (/\b(?:how often|times?|occasions?|instances?)\b/iu.test(question) || /\bhow many\b.{0,80}\b(?:did|have|was|were|do)\s+i\b/iu.test(question) || /\bnumber of\b.{0,40}\b(?:events?|visits?|trips?|purchases?|appointments?)\b/iu.test(question)) || /\bspend the most\b/iu.test(question); }
 const queryStopwords = new Set(["the", "and", "for", "with", "where", "what", "when", "which", "who", "whom", "whose", "why", "how", "long", "did", "does", "was", "were", "have", "has", "had", "much", "many", "from", "that", "this", "there", "their", "your", "you", "about", "after", "before", "into", "onto", "over", "under"]);
 function relevance(question: string, text: string) { const terms = unique(question.toLowerCase().match(/[a-z0-9$]+/g)?.filter((term) => (term.length >= 3 || term.startsWith("$")) && !queryStopwords.has(term)) ?? []); const normalizedQuestion = normalize(question); const normalized = normalize(text); let entityOperandScore = 0; if (/\bage\b/u.test(normalizedQuestion)) { if (/\b(?:me|myself)\b/u.test(normalizedQuestion) && /\bi\b.{0,40}\b(?:am|turned)\b.{0,12}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; if (/\bparents?\b/u.test(normalizedQuestion) && /\b(?:mom|mother|dad|father)\b.{0,16}\b(?:is|was|aged?)\b.{0,8}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; if (/\bgrandparents?\b/u.test(normalizedQuestion) && /\b(?:grandma|grandmother|grandpa|grandfather)\b.{0,16}\b(?:is|was|aged?)\b.{0,8}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; } return terms.filter((term) => normalized.includes(term)).length * 2 + terms.slice(0, -1).filter((term, index) => normalized.includes(`${term} ${terms[index + 1]}`)).length * 5 + terms.filter((term) => /\d/u.test(term) && normalized.includes(term)).length * 3 + entityOperandScore; }
 function inferSourceRoles(refs: SourceRef[], facts: FactItem[], roles: Map<string, BenchmarkAnswerSourceRole>): BenchmarkAnswerSourceRole[] { const direct = unique(facts.flatMap((fact) => (fact.sourceMessageIds ?? []).flatMap((id) => { const role = roles.get(id); return role && role !== "unknown" ? [role] : []; }))) as BenchmarkAnswerSourceRole[]; if (direct.length) return direct; const metadata = unique(refs.flatMap((ref) => { const role = sourceRole(ref.metadata?.role); return role === "unknown" ? [] : [role]; })) as BenchmarkAnswerSourceRole[]; if (metadata.length) return metadata; const inferred = unique(facts.flatMap((fact) => { const type = fact.factType.trim().toLowerCase(); const text = `${fact.factText}\n${fact.sourceClaim ?? ""}`.trim().toLowerCase(); if (type.startsWith("assistant_") || type === "assistant_response" || type.includes("recommendation") || /^(?:assistant|助手|助理)\s*[:：]/u.test(text)) return ["assistant"]; if (type.startsWith("user_") || /^(?:user|用户)\s*[:：]/u.test(text)) return ["user"]; return []; })) as BenchmarkAnswerSourceRole[]; return inferred.length ? inferred : ["unknown"]; }

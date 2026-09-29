@@ -1,4 +1,7 @@
 import { getContextEngineConfig, type ContextEngineConfig } from "../../config.js";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { postOpenAiCompatibleJson } from "./llm-request.js";
 
 export interface EmbeddingVectorResult {
@@ -21,6 +24,57 @@ type EmbeddingConfig = ContextEngineConfig["embedding"];
 
 const requestLimiters = new Map<string, AsyncLimiter>();
 
+// 远程 embedding API 同文本重复调用有 ~1e-3 浮点漂移（GPU 非确定），会顺着 vector 分
+// 抖动检索排序。设 CONTEXT_ENGINE_EMBEDDING_CACHE_DIR 后同 (fingerprint, text) 永远复用
+// 首次结果（进程内 + 磁盘），保证评测可复现。
+const embeddingCache = new Map<string, number[]>();
+let embeddingCacheLoaded = false;
+
+function embeddingCacheKey(fingerprint: string, input: string) {
+  return createHash("sha256").update(`${fingerprint}\n${input}`).digest("hex");
+}
+
+function embeddingCacheFile() {
+  const dir = process.env.CONTEXT_ENGINE_EMBEDDING_CACHE_DIR;
+  return dir ? join(dir, "embedding-cache.json") : undefined;
+}
+
+// 供 cross-encoder-reranker 等其他非确定远程调用共用同一份磁盘缓存。
+export function readRemoteScoreCache(key: string): number[] | undefined {
+  loadEmbeddingCache();
+  return embeddingCache.get(key);
+}
+
+export function writeRemoteScoreCache(entries: Array<[string, number[]]>) {
+  if (!entries.length || !embeddingCacheFile()) return;
+  loadEmbeddingCache();
+  for (const [key, value] of entries) embeddingCache.set(key, value);
+  saveEmbeddingCache();
+}
+
+function loadEmbeddingCache() {
+  const file = embeddingCacheFile();
+  if (!file || embeddingCacheLoaded) return;
+  embeddingCacheLoaded = true;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, number[]>;
+    for (const [key, value] of Object.entries(parsed)) embeddingCache.set(key, value);
+  } catch {
+    // ponytail: 损坏缓存当空处理
+  }
+}
+
+function saveEmbeddingCache() {
+  const file = embeddingCacheFile();
+  if (!file) return;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(Object.fromEntries(embeddingCache)));
+  } catch {
+    // ponytail: 缓存写失败不阻断检索
+  }
+}
+
 export function createEmbeddingClient(config: EmbeddingConfig = getContextEngineConfig().embedding): EmbeddingClient {
   if (config.protocol === "deterministic-test") {
     return createDeterministicTestEmbeddingClient(config.dimensions);
@@ -33,12 +87,23 @@ export function createEmbeddingClient(config: EmbeddingConfig = getContextEngine
     dimensions: config.dimensions,
     fingerprint,
     async embed(inputs, options = {}) {
+      loadEmbeddingCache();
       const normalizedInputs = normalizeEmbeddingInputs(inputs);
-      const batches = chunk(normalizedInputs, config.batchSize);
-      const results = await Promise.all(batches.map((batch) => limiter.run(() =>
-        requestRemoteEmbeddingBatch(batch, endpoint, config, options)
-      )));
-      return results.flat();
+      const keyOf = (input: string) => embeddingCacheKey(fingerprint, input);
+      const misses = [...new Set(normalizedInputs.filter((input) => !embeddingCache.has(keyOf(input))))];
+      if (misses.length) {
+        const batches = chunk(misses, config.batchSize);
+        const fetched = (await Promise.all(batches.map((batch) => limiter.run(() =>
+          requestRemoteEmbeddingBatch(batch, endpoint, config, options)
+        )))).flat();
+        for (const result of fetched) embeddingCache.set(keyOf(result.input), result.embedding);
+        saveEmbeddingCache();
+      }
+      return normalizedInputs.map((input) => {
+        const embedding = embeddingCache.get(keyOf(input));
+        if (!embedding) throw new Error(`Embedding returned no vector for: ${input.slice(0, 80)}`);
+        return { input, embedding, source: "remote" as const };
+      });
     }
   };
 }

@@ -160,6 +160,8 @@ export const longMemEvalAnswerCandidateLimit = 100;
 const longMemEvalRetrievalCompatibilityLimit = 10;
 export const longMemEvalAnswerContextTokenBudget = 20_000;
 export const longMemEvalAnswerEvidenceLimit = 60;
+// 图邻居召回：top10 种子记忆沿关系边 1-hop 扩展补充候选（A/B 开关）。
+const longMemEvalGraphNeighborRecall = false;
 const longMemEvalAnswerBaselineCandidateCount = 12;
 const longMemEvalAnswerCompletionCandidateCount = longMemEvalAnswerEvidenceLimit - longMemEvalAnswerBaselineCandidateCount;
 const longMemEvalAnswerDisableReasoning = process.env.LONGMEMEVAL_ANSWER_DISABLE_REASONING === "true";
@@ -3458,6 +3460,7 @@ async function buildLongMemEvalAnswerContext(
       tokenBudget,
       includeInactive: true,
       factRetrieval: true,
+      graphNeighborRecall: longMemEvalGraphNeighborRecall,
       resolveSessionId: (source) => longMemEvalSessionIdForQuestion(source, context.questionId)
     })
   });
@@ -4602,6 +4605,11 @@ export function buildLongMemEvalAnswerPrompt(input: {
     "- Counting events in compound statements: one fact says the user attended dinners at Alex's place and at Blake's place, and another fact says the user attended dinner at Casey's place. These are three distinct attended dinners, even though two appear in one sentence.",
     "- Counting distinct entities rather than actions: the user cleaned and serviced the same road bike, then planned to service a commuter bike. For a question asking how many bikes were serviced or planned for service, the answer is two bikes, not three actions.",
     "- Subject and action-state filtering: if the question asks what the user has actually used, count only facts that state the user used, made, served, or otherwise completed the relevant action. Do not count ingredients that the assistant merely recommended, listed in a hypothetical recipe, or suggested for future experimentation. For example, if the user made cocktails with lime, orange, and lemon, while the assistant only suggested grapefruit and yuzu mixers, the count is three, not five.",
+    "- Category breadth: when counting items of a category (e.g. devices for health tracking), include every item the user said they use for that purpose, even general-purpose ones like a phone used for health reminders; do not narrow the category to “dedicated” devices only.",
+    "- Default attribution: when some events of the same kind lack an explicit reason while the others of that kind are attributed to a cause (e.g. missed runs due to work), attribute the unexplained ones to the same cause instead of excluding them.",
+    "- Loose time windows: for fuzzy relative expressions (“last month” vs “past month”, “recently”), prefer the inclusive interpretation that keeps borderline events inside the window; excluding a borderline event requires explicit evidence it falls outside.",
+    "- Conflicting records of one event: when two facts describe the same unique event (e.g. the same birthday cake) with conflicting timestamps, treat them as a single occurrence and prefer the record whose stated date better matches its evidenceTime; never count the event twice.",
+    "These inclusive defaults apply only to the borderline inclusion of events that are already recorded. They never override missing evidence: if a required item or operand has no supporting fact in the Context Pack at all, answer that it cannot be determined.",
     "- Difference and duration: if a taxi costs $70 and a train costs $15, the savings are $70 - $15 = $55. If total tenure is 4 years 2 months and the prior role lasted 2 years 9 months, convert to months before subtracting: 50 - 33 = 17 months = 1 year 5 months.",
     "- Event-relative duration: if the user attended a baking class on March 20 and made a friend's birthday cake on April 10, then 'How many days ago did I attend the baking class when I made my friend's birthday cake?' uses the cake-making event as the reference point: April 10 - March 20 = 21 days, not the Question Date.",
     "- Insufficient operands: if the taxi price is known but the bus price is not present in the Context Pack, the savings cannot be determined. Do not import outside prices or guess the missing operand.",
@@ -4791,7 +4799,7 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-async function judgeHypothesis(
+export async function judgeHypothesis(
   hypothesis: string,
   context: SampleContext,
   judge: JudgeConfig,

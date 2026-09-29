@@ -1,4 +1,6 @@
 import { getContextEngineConfig } from "../../config.js";
+import { createHash } from "node:crypto";
+import { readRemoteScoreCache, writeRemoteScoreCache } from "./embedding.js";
 import { postOpenAiCompatibleJson } from "./llm-request.js";
 
 export interface RerankDocument {
@@ -43,6 +45,14 @@ export function createHttpCrossEncoderReranker(input: {
     model: input.model,
     async rerank(query, documents) {
       if (!documents.length) return [];
+      // rerank API 与 embedding 同样存在 GPU 浮点漂移，命中缓存保证评测可复现。
+      const cacheKey = createHash("sha256")
+        .update(`${input.model}\n${query}\n${documents.map((document) => document.text).join("\u0000")}`)
+        .digest("hex");
+      const cached = readRemoteScoreCache(cacheKey);
+      if (cached) {
+        return documents.map((document, index) => ({ id: document.id, score: cached[index] ?? 0, originalRank: index + 1 }));
+      }
       const response = await postOpenAiCompatibleJson({
         endpoint: input.endpoint,
         apiKey: input.apiKey,
@@ -59,7 +69,11 @@ export function createHttpCrossEncoderReranker(input: {
           return_documents: false
         }
       });
-      return parseRerankResponse(response, documents);
+      const parsed = parseRerankResponse(response, documents);
+      const scoresByRank = new Array<number>(documents.length).fill(0);
+      for (const result of parsed) scoresByRank[result.originalRank - 1] = result.score;
+      writeRemoteScoreCache([[cacheKey, scoresByRank]]);
+      return parsed;
     }
   };
 }

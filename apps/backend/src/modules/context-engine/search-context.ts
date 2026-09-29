@@ -63,8 +63,10 @@ const graphNeighborRelationWeights: Partial<Record<RelationEdge["relationType"],
   is_same_as: 1,
   alias_of: 1,
   updates: 0.9,
+  same_source: 0.8,
   derived_from: 0.7,
   part_of: 0.7,
+  supports: 0.6,
   conflicts_with: 0.6
 };
 const graphNeighborConfidenceFactors = { high: 1, medium: 0.7, low: 0.4 } as const;
