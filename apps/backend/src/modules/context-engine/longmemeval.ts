@@ -705,7 +705,7 @@ interface LongMemEvalAnswerContext {
 
 type LongMemEvalAnswerTemporal = Pick<
   ContextPackItem["temporal"],
-  "evidenceTime" | "validTime" | "events"
+  "evidenceTime" | "validTime" | "validTimeStart" | "validTimeEnd" | "events"
 >;
 
 export type LongMemEvalAnswerSourceRole = "user" | "assistant" | "tool" | "unknown";
@@ -3511,7 +3511,7 @@ async function buildLongMemEvalAnswerContext(
         renderedPromptHasTemporalMetadata: candidates.some((candidate) =>
           shared.selectedItems.some((item) => item.id === candidate.item.id) &&
           longMemEvalAnswerCandidateHasTemporalEvidence(candidate) &&
-          [candidate.temporal.validTime, candidate.temporal.evidenceTime]
+          [candidate.temporal.validTime, candidate.temporal.validTimeStart, candidate.temporal.evidenceTime]
             .some((value) => value ? shared.serializedPrompt.includes(value) : false)
         )
       };
@@ -3801,6 +3801,8 @@ function mergeLongMemEvalAnswerTemporal(
 ): LongMemEvalAnswerTemporal {
   const evidenceTime = temporal.evidenceTime ?? facts.find((fact) => fact.evidenceTime)?.evidenceTime;
   const validTime = temporal.validTime ?? facts.find((fact) => fact.validTime)?.validTime;
+  const validTimeStart = temporal.validTimeStart ?? facts.find((fact) => fact.validTimeStart)?.validTimeStart;
+  const validTimeEnd = temporal.validTimeEnd ?? facts.find((fact) => fact.validTimeEnd)?.validTimeEnd;
   const events = mergeLongMemEvalTemporalEvents([
     ...(temporal.events ?? []),
     ...facts.flatMap((fact) => fact.events ?? [])
@@ -3808,6 +3810,8 @@ function mergeLongMemEvalAnswerTemporal(
   return {
     ...(evidenceTime ? { evidenceTime } : {}),
     ...(validTime && events.length <= 1 ? { validTime } : {}),
+    ...(!validTime && validTimeStart && events.length <= 1 ? { validTimeStart } : {}),
+    ...(!validTime && validTimeEnd && validTimeStart && events.length <= 1 ? { validTimeEnd } : {}),
     ...(events.length ? { events } : {})
   };
 }
@@ -4067,6 +4071,16 @@ function renderLongMemEvalAnswerRelation(
   return `${edge.relationType} ${counterpart}`;
 }
 
+function formatLongMemEvalValidTime(temporal: LongMemEvalAnswerTemporal) {
+  if (temporal.validTime) return temporal.validTime;
+  if (temporal.validTimeStart) {
+    return temporal.validTimeEnd
+      ? `${temporal.validTimeStart} ~ ${temporal.validTimeEnd}（区间）`
+      : `${temporal.validTimeStart} 起（区间起点）`;
+  }
+  return "未提供";
+}
+
 function renderLongMemEvalAnswerEvidenceItem(
   candidate: LongMemEvalAnswerEvidenceCandidate,
   index: number,
@@ -4086,7 +4100,7 @@ function renderLongMemEvalAnswerEvidenceItem(
     `- [${index}] item:${candidate.item.id}`,
     candidate.evidenceText,
     ...(sequencedFacts.length ? ["  事实抽取顺序：", ...sequencedFacts] : []),
-    `  事实发生时间：${candidate.temporal.validTime ?? "未提供"}`,
+    `  事实发生时间：${formatLongMemEvalValidTime(candidate.temporal)}`,
     ...(candidate.temporal.events?.length
       ? [`  事件时间映射：${candidate.temporal.events.map((event) => `${event.eventKey} | ${event.label} | ${event.validTime}`).join("；")}`]
       : []),
