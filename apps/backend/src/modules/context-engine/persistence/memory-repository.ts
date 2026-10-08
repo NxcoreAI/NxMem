@@ -4011,6 +4011,8 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     this.db.exec("PRAGMA mmap_size=8589934592;");
     if (!options.readOnly) {
       this.db.exec("PRAGMA journal_mode=WAL;");
+      // ponytail: WAL 下 NORMAL 只丢最近事务不损坏库，省掉每次 commit 的 fsync（评测大量小事务）
+      this.db.exec("PRAGMA synchronous=NORMAL;");
       this.db.exec("PRAGMA foreign_keys=ON;");
       this.db.exec(schemaSql);
       this.applyMigrations();

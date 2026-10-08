@@ -226,6 +226,7 @@ async function main() {
     const evaluationOptions = {
       ks: options.ks,
       logger: cliLogger,
+      ...(options.questionIds.length ? { questionIds: options.questionIds } : {}),
       ...(options.modelConcurrency ? { modelConcurrency: options.modelConcurrency } : {}),
       ...(options.evalBatchSize ? { evalBatchSize: options.evalBatchSize } : {}),
       ...(options.ingestSampleConcurrency ? { ingestSampleConcurrency: options.ingestSampleConcurrency } : {}),

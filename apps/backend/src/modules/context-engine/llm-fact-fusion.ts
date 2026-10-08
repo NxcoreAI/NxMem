@@ -105,7 +105,7 @@ class FactFusionResponseParseError extends Error {
   }
 }
 
-const promptVersion = "fact-fusion.openai-compatible.v12";
+const promptVersion = "fact-fusion.openai-compatible.v14";
 const factSchemaVersion = "fact-item.v1";
 const DEFAULT_FACT_FUSION_BATCH_TOKEN_BUDGET = 12000;
 const DEFAULT_FACT_FUSION_BATCH_OVERLAP_ROWS = 0;
@@ -489,6 +489,7 @@ function buildFactFusionPrompt(event: MemoryEvent, alignedEvidence: AlignedEvide
         "相对时间解析（必须）：当陈述包含 today/yesterday/last week/a few days ago 等相对时间表达时，必须结合 event.eventTime 将其换算为绝对日期，并把该绝对日期写入 factText（例如 'On 2026-03-20, the user read ...'）。注意区分事件发生时间与消息记录时间：陈述中的 today 指消息发出当天。无法确定时在 factText 中注明 'exact date unclear'，不得编造日期。",
         "timeAnchor 填写动作发生时间的绝对日期（YYYY-MM-DD），以 event.eventTime 为基准换算相对时间表达；原文中的其它日期名词（如刊物期号、节日名、文章标题中的日期）不是事件发生时间，不得作为 timeAnchor。无法可靠确定时返回 null。不要输出 evidenceTime、validTime、validTimeStart、validTimeEnd、timeBasis 或 timeConfidence 等结构化时间字段。",
         "列表边界判定（本条优先于任何主题级合并规则）：assistant 回答中的编号/并列列表，当普通并列列表中的各项属于同一主题、且没有各自独立的条件、数值或解释时，普通并列列表应按共同主题合并为一条事实；只有列表项包含可独立检索的重要细节（材料、工具、做法、参数、具体名称）时才拆分——每一项单独成为一条事实并保留该项全部关键细节。例如 assistant 列出 5 个回收材料 DIY 项目、每项含材料与做法（如 'Newspaper Flower Vase - Seal the vase with Mod Podge or another sealant to make it water-resistant'）时，各项含独立的材料与做法细节，必须拆成 5 条事实分别保留（含 Mod Podge 密封细节），不得合并为主题级概括，也不得只抽取部分项目。",
+        "主题合并的保真底线：即使按主题合并，factText 也必须保留原文枚举中出现的全部具体名称（物种、物品、人名、地名等可检索实体），不得用 'common X like A and B' 之类的部分概括替代完整枚举；转折/例外从句（except/but/however 等引出的新观察）引入的信息不属于前述并列主题，必须独立成条事实，不得在合并概括中丢弃。",
         "一个 fact 只能描述一个独立事件及其时间锚点。若一句话包含多个分别带时间的事件，必须拆成多个 fact；from/to 等描述同一持续区间的完整表达可以作为一个 timeAnchor。"
       ] : [])
     ],

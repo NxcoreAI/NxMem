@@ -110,6 +110,8 @@ export interface LongMemEvalOptions {
   logger?: LongMemEvalLogger | undefined;
   onProgress?: (progress: LongMemEvalProgress) => void;
   logIngestRequestContext?: boolean;
+  /** 只评测指定 questionId 的样本（多进程分片并行用；ingest 与答题都只处理命中的样本）。 */
+  questionIds?: string[];
   enableLtmReinforcement?: boolean;
   diagnosticsPath?: string;
   /** Independent sample-summary JSONL trace. Defaults to a run-specific sibling of diagnosticsPath. */
@@ -881,7 +883,16 @@ export async function evaluateLongMemEvalDataset(
     : diagnosticsPath
       ? longMemEvalSiblingTracePath(diagnosticsPath, runId)
       : undefined;
-  const samples = await loadLongMemEvalSamples(datasetPath);
+  const loadedSamples = await loadLongMemEvalSamples(datasetPath);
+  const questionIdFilter = options.questionIds?.length ? new Set(options.questionIds) : undefined;
+  const samples = questionIdFilter
+    ? loadedSamples.filter((sample) => questionIdFilter.has(readQuestionId(sample)))
+    : loadedSamples;
+  if (questionIdFilter && samples.length !== questionIdFilter.size) {
+    const found = new Set(samples.map((sample) => readQuestionId(sample)));
+    const missing = [...questionIdFilter].filter((id) => !found.has(id));
+    throw new LongMemEvalArtifactError("QUESTION_ID_NOT_FOUND", `questionIds not in dataset: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ` (+${missing.length - 5} more)` : ""}`);
+  }
   const datasetIdentity = await createLongMemEvalDatasetIdentity(datasetPath);
   const sampleIdentities = samples.map((sample, index) => ({ index: index + 1, questionId: readQuestionId(sample) }));
   throwIfLongMemEvalCancelled(signal);
@@ -5839,11 +5850,12 @@ async function ingestSampleTimeline(
     trace?: LongMemEvalSampleTraceContext;
     stageAttempt?: number;
   }
-): Promise<{ sessions: LongMemEvalSessionDocument[]; ingestedSessions: number; skippedSessions: number }> {
+): Promise<{ sessions: LongMemEvalSessionDocument[]; ingestedSessions: number; skippedSessions: number; failedSessions: number }> {
   const sessions = buildSessionDocuments([sample]);
-  if (!sessions.length) return { sessions, ingestedSessions: 0, skippedSessions: 0 };
+  if (!sessions.length) return { sessions, ingestedSessions: 0, skippedSessions: 0, failedSessions: 0 };
   let ingestedSessions = 0;
   let skippedSessions = 0;
+  let failedSessions = 0;
   let completedSessions = 0;
 
   const results = await mapWithConcurrencyUntilError(sessions, input.ingestSessionConcurrency, async (session, sessionIndex) => {
@@ -5943,7 +5955,36 @@ async function ingestSampleTimeline(
       });
     } catch (error) {
       await repository.deleteMemoryEventCascade(event.eventId, { recordChangeEvent: false });
-      throw error;
+      failedSessions += 1;
+      logLongMemEvalRequest(input.logger, {
+        stage: "ingest",
+        ingestStage: "finalize",
+        phase: "sample_session_event_failed",
+        questionId: readQuestionId(sample),
+        questionType: readQuestionType(sample),
+        currentSampleIndex: input.sampleIndex,
+        currentSampleCount: input.sampleCount,
+        eventId: event.eventId,
+        sessionId: session.sessionId,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+      input.emitProgress({
+        stage: "ingest",
+        ingestStage: "finalize",
+        ...sampleProgress,
+        stageMessage: `haystack session 入库失败，跳过该 session: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`,
+        stageProgress: percent(input.sampleIndex, input.sampleCount),
+        batchProgress: percent(processedSessionCount, input.totalSessions),
+        batchMessage: "入库收尾批次",
+        processedSamples: input.sampleIndex,
+        processedSessions: processedSessionCount,
+        advanceSteps: 1,
+        advanceSessions: 1,
+        ...(completedSessions + failedSessions === sessions.length ? { advanceSamples: 1 } : {}),
+        batchIndex: processedSessionCount,
+        batchCount: input.totalSessions
+      });
+      return { ingested: 0, skipped: 0 };
     }
 
     if (input.logIngestRequestContext) {
@@ -5978,7 +6019,7 @@ async function ingestSampleTimeline(
       processedSessions: processedSessionCount,
       advanceSteps: 1,
       advanceSessions: 1,
-      ...(completedSessions === sessions.length ? { advanceSamples: 1 } : {}),
+      ...(completedSessions + failedSessions === sessions.length ? { advanceSamples: 1 } : {}),
       batchIndex: processedSessionCount,
       batchCount: input.totalSessions
     });
@@ -5989,7 +6030,7 @@ async function ingestSampleTimeline(
     skippedSessions += result.skipped;
   }
   await yieldToEventLoop();
-  return { sessions, ingestedSessions, skippedSessions };
+  return { sessions, ingestedSessions, skippedSessions, failedSessions };
 }
 
 async function traceLongMemEvalIngestionOperation(
