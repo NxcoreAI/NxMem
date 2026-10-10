@@ -1035,13 +1035,8 @@ export async function evaluateLongMemEvalDataset(
     const judgeConfig = resolveJudgeConfig(options.llm, config);
     const answerLimiter = createAsyncConcurrencyLimiter(answerConcurrency);
     const judgeLimiter = createAsyncConcurrencyLimiter(judgeConcurrency);
-    const canReuseCompletedIngest = (modelOnlyEvaluation || answerOnlyEvaluation) && await allSampleTimelineEventsExist(repository, samples);
-    if (answerOnlyEvaluation && !canReuseCompletedIngest) {
-      throw new Error("LongMemEval answer-only evaluation requires all samples to be pre-ingested; rerun without --answer-only to build the store first");
-    }
-    if (modelOnlyEvaluation && answerContextMode === "retrieval" && !canReuseCompletedIngest) {
-      throw new Error("LongMemEval model-only retrieval requires all samples to be pre-ingested; rerun without --model-only to build the store first");
-    }
+    // answer-only/model-only 一律复用库内已入库数据，缺失的 session 按现状直接答题
+    const canReuseCompletedIngest = modelOnlyEvaluation || answerOnlyEvaluation;
 
     const sampleSessionOffsets: number[] = [];
     let nextSessionOffset = 0;
@@ -6514,18 +6509,6 @@ async function hasCompletedMemoryEvent(repository: ContextEngineRepository, even
   if (!await hasMemoryEvent(repository, eventId)) return false;
   const task = await repository.getPipelineTaskByEventId(eventId);
   return task?.status === "succeeded";
-}
-
-async function allSampleTimelineEventsExist(repository: ContextEngineRepository, samples: LongMemEvalSample[]) {
-  if (!samples.length) return false;
-  for (const sample of samples) {
-    const sessions = buildSessionDocuments([sample]);
-    if (!sessions.length) return false;
-    for (const session of sessions) {
-      if (!await hasCompletedMemoryEvent(repository, makeSampleSessionEvent(sample, session).eventId)) return false;
-    }
-  }
-  return true;
 }
 
 export async function openLongMemEvalRepository(

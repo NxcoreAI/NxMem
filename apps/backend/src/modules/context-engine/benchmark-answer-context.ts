@@ -26,7 +26,11 @@ export type BenchmarkAnswerSourceRole = "user" | "assistant" | "tool" | "unknown
 export type BenchmarkAnswerEvidenceRole =
   | "direct_answer" | "temporal_start" | "temporal_end" | "old_state" | "new_state"
   | "calculation_operand" | "disambiguation";
-export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority" | "fact_quota";
+export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority" | "fact_quota" | "fact_below_threshold";
+
+// fact 的 rerank 分数双峰分布：相关 fact ~0.95+，噪声 fact ~0.02 以下。
+// 低于此门槛的 fact 一律不进 pack，防止低质 fact 挤占记忆证据席位。
+export const FACT_RERANK_THRESHOLD = 0.25;
 
 export interface BenchmarkAnswerContextInput {
   questionId: string;
@@ -270,9 +274,16 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
   const factQuota = Math.max(4, Math.floor(evidenceLimit / 4));
   let factSelected = 0;
   for (const candidate of considered) {
-    if (candidate.item.layer === "fact" && factSelected >= factQuota) {
-      rejected.push(rejection(candidate, "fact_quota"));
-      continue;
+    if (candidate.item.layer === "fact") {
+      // 低分 fact 直接拒（噪声）；过门槛的 fact 与 STM 平等竞争席位，仅受 quota 上限约束
+      if ((candidate.scoreBreakdown.reranker ?? candidate.item.score) < FACT_RERANK_THRESHOLD) {
+        rejected.push(rejection(candidate, "fact_below_threshold"));
+        continue;
+      }
+      if (factSelected >= factQuota) {
+        rejected.push(rejection(candidate, "fact_quota"));
+        continue;
+      }
     }
     const tokens = estimateContextTokens(renderItem(candidate, selectedCandidates.length + 1));
     if (usedTokens + tokens > input.tokenBudget) { rejected.push(rejection(candidate, "budget")); continue; }
@@ -451,7 +462,8 @@ function searchResultToItem(result: ContextSearchResult): ContextPackItem {
 }
 function candidateContextItem(candidate: BenchmarkAnswerEvidenceCandidate): ContextPackItem { return { ...candidate.item, content: candidate.evidenceText, compressedContent: candidate.evidenceText }; }
 function rejection(candidate: BenchmarkAnswerEvidenceCandidate, reason: BenchmarkAnswerRejectReason): BenchmarkAnswerEvidenceRejection { return { itemId: candidate.item.id, layer: candidate.item.layer, reason, contentChars: candidate.evidenceText.length }; }
-function duplicateKey(candidate: BenchmarkAnswerEvidenceCandidate) { return candidate.item.factIds.length ? `facts:${[...candidate.item.factIds].sort().join("|")}` : `content:${normalize(candidate.evidenceText)}`; }
+// ponytail: 去重限定同层内——STM 与其派生 fact 共享 factIds，跨层合并会把记忆证据吃掉
+function duplicateKey(candidate: BenchmarkAnswerEvidenceCandidate) { const prefix = candidate.item.layer; return candidate.item.factIds.length ? `${prefix}:facts:${[...candidate.item.factIds].sort().join("|")}` : `${prefix}:content:${normalize(candidate.evidenceText)}`; }
 function identityIds(candidate: BenchmarkAnswerEvidenceCandidate) { return unique([candidate.item.id, ...candidate.item.memoryIds, ...candidate.item.factIds]); }
 function ownsId(candidate: BenchmarkAnswerEvidenceCandidate, id: string) { return identityIds(candidate).includes(id); }
 function completeness(candidate: BenchmarkAnswerEvidenceCandidate) { return [candidate.temporal.validTime, candidate.temporal.evidenceTime].filter(Boolean).length * 20 + candidate.relations.length * 10 + candidate.sourceRoles.filter((role) => role !== "unknown").length * 8 + candidate.sourceSessionIds.length * 5 + candidate.item.sourceRefs.length * 3 + Math.min(10, candidate.evidenceText.length / 200); }

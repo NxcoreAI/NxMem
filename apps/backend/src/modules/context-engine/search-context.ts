@@ -342,10 +342,8 @@ export async function searchContext(
       temporalMatch.matchedBasis
     )];
   });
-  const rerankedFactResults = factResults.filter((result) => result.scoreBreakdown.reranker !== undefined);
-  const candidates = rerankedFactResults.length >= limit
-    ? [...rerankedFactResults, ...evidenceResults].sort(compareSearchResults)
-    : [...memoryResultsWithSupplements, ...factResults, ...evidenceResults].sort(compareSearchResults);
+  // ponytail: 不做 fact>=limit 就丢 STM 的 fast-path——fact 索引全量打开后必然触发，会把记忆通道整个旁路
+  const candidates = [...memoryResultsWithSupplements, ...factResults, ...evidenceResults].sort(compareSearchResults);
   const deduped = dedupeResults(candidates, dropped, query.contextScopeId !== undefined);
 
   const baseResponse: ContextSearchResponse = {
