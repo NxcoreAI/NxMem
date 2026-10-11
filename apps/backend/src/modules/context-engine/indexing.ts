@@ -10,6 +10,7 @@ import type {
 import { normalizeMemoryTemporalMetadata } from "./memory-temporal.js";
 import type { ContextEngineRepository } from "./persistence/repository.js";
 import { isLongTermRecallEligible, isShortTermRecallEligible } from "./lifecycle.js";
+import { reconcileMemoryGraphForFacts } from "./memory-graph.js";
 import { createEmbeddingClient, type EmbeddingClient } from "./embedding.js";
 import { longTermRetrievalWeight, shortTermRetrievalWeight } from "./retrieval-weight.js";
 import { estimateContextTokens } from "./token-estimator.js";
@@ -176,6 +177,8 @@ export function buildFactSearchContent(fact: FactItem) {
     .filter(Boolean))].join("\n");
 }
 
+const FACT_RETRIEVAL_WEIGHT_BY_CONFIDENCE = { high: 1, medium: 0.6, low: 0.3 } as const;
+
 export async function refreshFactIndexes(
   repository: ContextEngineRepository,
   facts: readonly FactItem[],
@@ -193,6 +196,8 @@ export async function refreshFactIndexes(
   const vectors = await embeddingClient.embed(entries.map((entry) => entry.content));
   if (vectors.length !== entries.length) throw new Error(`Embedding returned ${vectors.length} Fact vectors for ${entries.length} inputs`);
   for (const [index, entry] of entries.entries()) {
+    const fact = facts[index];
+    if (!fact) throw new Error(`Fact missing at index ${index}`);
     const vector = vectors[index]?.embedding;
     if (!vector) throw new Error(`Embedding omitted Fact vector at index ${index}`);
     await repository.deleteIndexBundle("fact", entry.ownerId);
@@ -207,7 +212,24 @@ export async function refreshFactIndexes(
       lifecycleStatus: entry.lifecycleStatus,
       refreshedAt: entry.refreshedAt
     });
+    await repository.upsertGraphMemoryNode({
+      graphNodeId: `graph_fact_${fact.factId}`,
+      ownerId: fact.factId,
+      ownerType: "fact",
+      memoryType: fact.factType,
+      content: entry.content,
+      vector,
+      lifecycleStatus: fact.status,
+      retrievalWeight: FACT_RETRIEVAL_WEIGHT_BY_CONFIDENCE[fact.confidenceLevel],
+      sourceRefs: fact.linkedSourceRefs,
+      entityIds: fact.entityIds,
+      ...(fact.tenantId ? { tenantId: fact.tenantId } : {}),
+      ...(fact.principalId ? { principalId: fact.principalId } : {}),
+      ...normalizeMemoryTemporalMetadata(fact),
+      refreshedAt: entry.refreshedAt
+    });
   }
+  await reconcileMemoryGraphForFacts(repository, facts);
   return entries;
 }
 

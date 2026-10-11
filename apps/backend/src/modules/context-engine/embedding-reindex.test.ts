@@ -63,7 +63,8 @@ test("embedding reindex loads every eligible memory from an existing SQLite stor
 
   const result = await reindexConfiguredRepositoryEmbeddings({
     config: configWithDimensions(1024, storePath),
-    embeddingClient: fixedEmbeddingClient(1024)
+    embeddingClient: fixedEmbeddingClient(1024),
+    repository: new SqliteContextEngineRepository(storePath, undefined, { loadCache: true })
   });
 
   const reopened = new SqliteContextEngineRepository(storePath);

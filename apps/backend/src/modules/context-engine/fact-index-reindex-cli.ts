@@ -3,13 +3,14 @@ import { getContextEngineConfig } from "../../config.js";
 import { createEmbeddingClient } from "./embedding.js";
 import { refreshFactIndexes } from "./indexing.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
+import { createRequiredGraphStore } from "./service-bootstrap.js";
 
 const config = getContextEngineConfig();
 const storeFlag = process.argv.indexOf("--store-path");
 const storePath = storeFlag >= 0 && process.argv[storeFlag + 1]
   ? resolve(config.projectRoot, process.argv[storeFlag + 1]!)
   : config.storage.storePath;
-const repository = new SqliteContextEngineRepository(storePath, undefined, { loadCache: true });
+const repository = new SqliteContextEngineRepository(storePath, await createRequiredGraphStore(), { loadCache: true });
 
 try {
   const facts = repository.getDebugSnapshot().facts;

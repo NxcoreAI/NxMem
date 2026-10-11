@@ -1062,7 +1062,8 @@ async function rankByGraphText(
   return hits
     .map(
       (entry): { ownerType: "stm" | "ltm"; ownerId: string; score: number } => ({
-        ownerType: entry.ownerType,
+        // graphSearchOptions 恒设 ownerTypes（stm/ltm），fact 不会出现在此通道
+        ownerType: entry.ownerType as "stm" | "ltm",
         ownerId: entry.ownerId,
         score: entry.score
       })
@@ -1101,7 +1102,8 @@ async function rankByTemporalFallback(
   return page.nodes
     .filter((node) => !sourceScope.active || sourceScope.ownerKeys.has(`${node.ownerType}:${node.ownerId}`))
     .map((node) => ({
-      ownerType: node.ownerType,
+      // ownerTypes 恒为 stm/ltm 子集，节点类型已被查询过滤
+      ownerType: node.ownerType as "stm" | "ltm",
       ownerId: node.ownerId,
       score: 0
     }));
@@ -1114,7 +1116,8 @@ function graphSearchOptions(
 ) {
   const ownerTypes = layerOwnerTypes(query?.layer);
   const options: GraphMemorySearchOptions = {};
-  if (ownerTypes) options.ownerTypes = ownerTypes;
+  // layer=all 时 ownerTypes 为空，不设类型过滤会让 fact 漏进 stm/ltm 图通道。
+  options.ownerTypes = ownerTypes ?? ["stm", "ltm"];
   if (sourceScope.active) options.ownerKeys = [...sourceScope.ownerKeys];
   // Valid-time filtering is applied after materialization so memories without
   // validTime remain eligible instead of being silently excluded by the index.
@@ -1194,6 +1197,59 @@ function mergeByRrf(...rankedLists: Array<Array<{ ownerType: "stm" | "ltm"; owne
     }
   }
   return [...combined.values()].sort((left, right) => right.rrfScore - left.rrfScore);
+}
+
+const graphNeighborSeedLimit = 20;
+const graphNeighborResultLimit = 100;
+const graphNeighborFrontierLimit = 50;
+const graphNeighborHopDecay = 0.5;
+
+type GraphNeighborOwner = { ownerType: "stm" | "ltm"; ownerId: string; score: number };
+
+async function expandGraphNeighbors(
+  repository: ContextEngineRepository,
+  seeds: RankedOwner[],
+  exclude: Set<string>,
+  hops: number
+): Promise<GraphNeighborOwner[]> {
+  const best = new Map<string, GraphNeighborOwner>();
+  const enqueued = new Set(exclude);
+  for (const seed of seeds) enqueued.add(`${seed.ownerType}:${seed.ownerId}`);
+  let frontier: GraphNeighborOwner[] = seeds.map((seed) => ({
+    ownerType: seed.ownerType,
+    ownerId: seed.ownerId,
+    score: seed.rrfScore
+  }));
+  for (let hop = 1; hop <= hops; hop += 1) {
+    if (!frontier.length) break;
+    const edgeLists = await mapWithConcurrency(frontier, searchMaterializationConcurrency, (owner) =>
+      Promise.resolve(repository.getGraphRelationEdges(owner.ownerId))
+    );
+    const nextFrontier: GraphNeighborOwner[] = [];
+    for (const [index, owner] of frontier.entries()) {
+      for (const edge of edgeLists[index] ?? []) {
+        const neighborId = edge.fromId === owner.ownerId ? edge.toId : edge.fromId;
+        const neighborType = memoryOwnerTypeForId(neighborId);
+        // fact 不进邻居扩展：fact 走自身召回通道，此处只会把 fact id 当记忆物化
+        if (neighborType !== "stm" && neighborType !== "ltm") continue;
+        const key = `${neighborType}:${neighborId}`;
+        const score = owner.score * (edge.strength ?? 1) * Math.pow(graphNeighborHopDecay, hop - 1);
+        const existing = best.get(key);
+        if (!existing || score > existing.score) {
+          best.set(key, { ownerType: neighborType, ownerId: neighborId, score });
+        }
+        if (hop < hops && !enqueued.has(key)) {
+          enqueued.add(key);
+          nextFrontier.push({ ownerType: neighborType, ownerId: neighborId, score });
+        }
+      }
+    }
+    frontier = nextFrontier.slice(0, graphNeighborFrontierLimit);
+  }
+  return [...best.values()]
+    .filter((item) => !exclude.has(`${item.ownerType}:${item.ownerId}`))
+    .sort((left, right) => right.score - left.score || left.ownerId.localeCompare(right.ownerId))
+    .slice(0, graphNeighborResultLimit);
 }
 
 function vectorScore(vector: number[] | undefined, queryVector: number[]) {

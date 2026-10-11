@@ -149,6 +149,8 @@ export async function evaluateRetrievalBenchmark(
   const limit = clampLimit(options.limit);
   const ks = normalizeKs(options.ks ?? [1, 5, 10, 20, 50, 100]).map((k) => Math.min(k, limit));
   const snapshot = repository.getDebugSnapshot();
+  const graphRefs = new Map((await repository.listGraphNodeRefs?.() ?? [])
+    .map((ref) => [`${ref.ownerType}:${ref.ownerId}`, ref as { ownerType: "stm" | "ltm" | "fact"; ownerId: string; vectorLength: number }]));
   const reports: RetrievalBenchmarkCaseReport[] = [];
 
   for (const benchmarkCase of cases) {
@@ -174,8 +176,8 @@ export async function evaluateRetrievalBenchmark(
       session: scoreTargetMetrics(candidates, benchmarkCase.goldSessionIds, "session", ks)
     };
     const diagnostics = [
-      ...benchmarkCase.goldFactIds.map((targetId) => diagnoseTarget(snapshot, response, candidates, benchmarkCase, "fact", targetId)),
-      ...benchmarkCase.goldSessionIds.map((targetId) => diagnoseTarget(snapshot, response, candidates, benchmarkCase, "session", targetId))
+      ...benchmarkCase.goldFactIds.map((targetId) => diagnoseTarget(snapshot, graphRefs, response, candidates, benchmarkCase, "fact", targetId)),
+      ...benchmarkCase.goldSessionIds.map((targetId) => diagnoseTarget(snapshot, graphRefs, response, candidates, benchmarkCase, "session", targetId))
     ];
     reports.push({
       caseId: benchmarkCase.caseId,
@@ -327,6 +329,7 @@ function aggregateMetrics(
 
 function diagnoseTarget(
   snapshot: ContextDebugSnapshot,
+  graphRefs: Map<string, { ownerType: "stm" | "ltm" | "fact"; ownerId: string; vectorLength: number }>,
   response: Pick<ContextSearchResponse, "results" | "dropped">,
   candidates: readonly RetrievalBenchmarkCandidate[],
   benchmarkCase: RetrievalBenchmarkCase,
@@ -336,7 +339,7 @@ function diagnoseTarget(
   const owners = target === "fact"
     ? factOwnerIds(snapshot, targetId)
     : sessionOwnerIds(snapshot, benchmarkCase, targetId);
-  const indexedOwnerIds = owners.filter((ownerId) => hasCompleteIndexBundle(snapshot, ownerId));
+  const indexedOwnerIds = owners.filter((ownerId) => hasCompleteIndexBundle(snapshot, graphRefs, ownerId));
   const candidateRanks = candidates
     .filter((candidate) => target === "fact" ? candidate.factIds.includes(targetId) : candidate.sessionIds.includes(targetId))
     .map((candidate) => candidate.rank);
@@ -395,11 +398,15 @@ function sessionSourceExists(snapshot: ContextDebugSnapshot, benchmarkCase: Retr
   );
 }
 
-function hasCompleteIndexBundle(snapshot: ContextDebugSnapshot, ownerId: string) {
+function hasCompleteIndexBundle(
+  snapshot: ContextDebugSnapshot,
+  graphRefs: Map<string, { ownerType: "stm" | "ltm" | "fact"; ownerId: string; vectorLength: number }>,
+  ownerId: string
+) {
   const ownerType = snapshot.shortTermMemories.some((memory) => memory.memoryDataId === ownerId) ? "stm" : "ltm";
+  const graphRef = graphRefs.get(`${ownerType}:${ownerId}`);
   return snapshot.indexEntries.some((entry) => entry.ownerType === ownerType && entry.ownerId === ownerId) &&
-    snapshot.vectorIndexEntries.some((entry) => entry.ownerType === ownerType && entry.ownerId === ownerId) &&
-    snapshot.graphMemoryNodes.some((node) => node.ownerType === ownerType && node.ownerId === ownerId);
+    Boolean(graphRef && graphRef.vectorLength > 0);
 }
 
 function longMemEvalSampleToCase(sample: LongMemEvalSample): RetrievalBenchmarkCase {

@@ -14,6 +14,7 @@ import {
   relationTypeToNeo4jType,
   type GraphMemoryNodePage,
   type GraphMemoryNodePageQuery,
+  type GraphMemoryNodeRef,
   type GraphRelationEdgePage,
   type GraphRelationEdgePageQuery,
   type GraphRelationSearchQuery,
@@ -68,6 +69,12 @@ export interface Neo4jGraphMemoryStoreOptions {
 
 const defaultNeo4jConnectionTimeoutMs = 5000;
 const defaultNeo4jClearBatchSize = 1000;
+
+const neo4jLabelsByOwnerType: Record<GraphMemoryOwnerType, string> = {
+  stm: "MemoryNode:STM",
+  ltm: "MemoryNode:LTM",
+  fact: "MemoryNode:FACT"
+};
 
 export class Neo4jGraphMemoryStore implements GraphMemoryStore {
   private readonly options: Neo4jGraphMemoryStoreOptions;
@@ -135,7 +142,7 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
 
   async upsertGraphMemoryNode(node: GraphMemoryNode) {
     this.assertVectorDimensions(node.vector);
-    const labels = node.ownerType === "stm" ? "MemoryNode:STM" : "MemoryNode:LTM";
+    const labels = neo4jLabelsByOwnerType[node.ownerType];
     await this.run(
       `MERGE (node:${labels} {ownerKey: $ownerKey})
        SET node.ownerType = $ownerType,
@@ -148,6 +155,8 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
            node.sourceRefsJson = $sourceRefsJson,
            node.entityIds = $entityIds,
            node.retrievalWeight = $retrievalWeight,
+           node.tenantId = $tenantId,
+           node.principalId = $principalId,
            node.evidenceTimeStart = $evidenceTimeStart,
            node.evidenceTimeEnd = $evidenceTimeEnd,
            node.evidenceTimeConfidence = $evidenceTimeConfidence,
@@ -168,6 +177,8 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
         sourceRefsJson: JSON.stringify(node.sourceRefs),
         entityIds: node.entityIds,
         retrievalWeight: node.retrievalWeight,
+        tenantId: node.tenantId ?? null,
+        principalId: node.principalId ?? null,
         evidenceTimeStart: node.evidenceTimeStart ?? null,
         evidenceTimeEnd: node.evidenceTimeEnd ?? null,
         evidenceTimeConfidence: node.evidenceTimeConfidence ?? "low",
@@ -254,16 +265,21 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
       `CALL db.index.fulltext.queryNodes($indexName, $query) YIELD node, score
        WHERE ($ownerTypes IS NULL OR node.ownerType IN $ownerTypes)
          AND ($ownerKeys IS NULL OR node.ownerKey IN $ownerKeys)
+         AND ($tenantId IS NULL OR node.tenantId = $tenantId)
+         AND ($principalId IS NULL OR node.principalId = $principalId)
          AND (${temporalEnvelopePredicate("node")})
        RETURN node.ownerType AS ownerType,
               node.ownerId AS ownerId,
               score AS score
-       ORDER BY score DESC`,
+       ORDER BY score DESC
+       LIMIT 200`,
       {
         indexName: this.options.fulltextIndexName,
         query,
         ownerTypes: options.ownerTypes ?? null,
         ownerKeys: options.ownerKeys ?? null,
+        tenantId: options.tenantId ?? null,
+        principalId: options.principalId ?? null,
         temporalBasis: options.temporalRange?.basis ?? null,
         temporalStart: options.temporalRange?.startTime ?? null,
         temporalEnd: options.temporalRange?.endTime ?? null
@@ -280,11 +296,14 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
   async searchGraphVector(queryVector: number[], options: GraphMemorySearchOptions = {}): Promise<GraphMemorySearchHit[]> {
     if (!queryVector.length) return [];
     this.assertVectorDimensions(queryVector);
+    await this.getDriver(); // readOnly 跳过 initialize 时，先加载驱动模块供 int() 使用
     const limit = Math.max(100, (options.ownerKeys?.length ?? 0) || 100);
     const rows = await this.run(
       `CALL db.index.vector.queryNodes($indexName, $limit, $queryVector) YIELD node, score
        WHERE ($ownerTypes IS NULL OR node.ownerType IN $ownerTypes)
          AND ($ownerKeys IS NULL OR node.ownerKey IN $ownerKeys)
+         AND ($tenantId IS NULL OR node.tenantId = $tenantId)
+         AND ($principalId IS NULL OR node.principalId = $principalId)
          AND (${temporalEnvelopePredicate("node")})
        RETURN node.ownerType AS ownerType,
               node.ownerId AS ownerId,
@@ -296,6 +315,8 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
         queryVector,
         ownerTypes: options.ownerTypes ?? null,
         ownerKeys: options.ownerKeys ?? null,
+        tenantId: options.tenantId ?? null,
+        principalId: options.principalId ?? null,
         temporalBasis: options.temporalRange?.basis ?? null,
         temporalStart: options.temporalRange?.startTime ?? null,
         temporalEnd: options.temporalRange?.endTime ?? null
@@ -326,6 +347,7 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
   }
 
   async searchGraphRelationEdges(query: GraphRelationSearchQuery): Promise<RelationEdge[]> {
+    await this.getDriver();
     const relationTypes = query.relationTypes?.filter(Boolean);
     const neo4jRelationTypes = relationTypes?.map((relationType) => relationTypeToNeo4jType(relationType));
     const ownerTypes = query.ownerTypes?.filter(Boolean);
@@ -362,6 +384,7 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
   }
 
   async listGraphMemoryNodes(query: GraphMemoryNodePageQuery): Promise<GraphMemoryNodePage> {
+    await this.getDriver();
     const rows = await this.run(
       `MATCH (node:MemoryNode)
        WHERE node.ownerType IN $layers
@@ -389,6 +412,7 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
   }
 
   async listGraphRelationEdges(query: GraphRelationEdgePageQuery): Promise<GraphRelationEdgePage> {
+    await this.getDriver();
     const rows = await this.run(
       `MATCH (from:MemoryNode)-[rel]->(to:MemoryNode)
        WHERE from.ownerType IN $layers
@@ -419,6 +443,22 @@ export class Neo4jGraphMemoryStore implements GraphMemoryStore {
       edges: edges.slice(0, query.limit),
       hasMore: edges.length > query.limit
     };
+  }
+
+  async listGraphNodeRefs(ownerTypes?: GraphMemoryOwnerType[]): Promise<GraphMemoryNodeRef[]> {
+    const rows = await this.run(
+      `MATCH (node:MemoryNode)
+       WHERE $ownerTypes IS NULL OR node.ownerType IN $ownerTypes
+       RETURN node.ownerType AS ownerType,
+              node.ownerId AS ownerId,
+              size(node.embedding) AS vectorLength`,
+      { ownerTypes: ownerTypes?.length ? ownerTypes : null }
+    );
+    return rows.records.map((record) => ({
+      ownerType: record.get("ownerType") as GraphMemoryOwnerType,
+      ownerId: String(record.get("ownerId")),
+      vectorLength: readNeo4jCount(record.get("vectorLength"))
+    }));
   }
 
   private async run<T = Record<string, unknown>>(query: string, parameters: Record<string, unknown> = {}) {
@@ -502,7 +542,7 @@ function relationFromNeo4j(rel: Neo4jRelationship, fromId: string, toId: string)
 function graphMemoryNodeFromNeo4j(node: Neo4jNode): GraphMemoryNode {
   const ownerType = node.properties.ownerType;
   const ownerId = node.properties.ownerId;
-  if ((ownerType !== "stm" && ownerType !== "ltm") || typeof ownerId !== "string") {
+  if ((ownerType !== "stm" && ownerType !== "ltm" && ownerType !== "fact") || typeof ownerId !== "string") {
     throw new Error("Invalid Neo4j memory node owner");
   }
   return {
@@ -545,6 +585,12 @@ function graphMemoryNodeFromNeo4j(node: Neo4jNode): GraphMemoryNode {
       : {}),
     ...(typeof node.properties.factSummary === "string"
       ? { factSummary: node.properties.factSummary }
+      : {}),
+    ...(typeof node.properties.tenantId === "string"
+      ? { tenantId: node.properties.tenantId }
+      : {}),
+    ...(typeof node.properties.principalId === "string"
+      ? { principalId: node.properties.principalId }
       : {})
   };
 }

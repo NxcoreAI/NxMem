@@ -8,7 +8,7 @@ import type {
 export const MEMORY_GRAPH_SCHEMA_VERSION = "memory-graph.v1" as const;
 export const MEMORY_GRAPH_CURSOR_VERSION = 1 as const;
 
-export const MEMORY_GRAPH_LAYERS = ["stm", "ltm"] as const satisfies readonly GraphMemoryOwnerType[];
+export const MEMORY_GRAPH_LAYERS = ["stm", "ltm", "fact"] as const satisfies readonly GraphMemoryOwnerType[];
 export const MEMORY_GRAPH_RELATION_TYPES = [
   "is_same_as",
   "alias_of",

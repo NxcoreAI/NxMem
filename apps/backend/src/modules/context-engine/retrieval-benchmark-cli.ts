@@ -9,6 +9,7 @@ import {
   type RetrievalBenchmarkReport
 } from "./retrieval-benchmark.js";
 import {
+  createConfiguredLongMemEvalGraphStore,
   getLongMemEvalStorePath,
   openLongMemEvalRepository
 } from "./longmemeval.js";
@@ -121,8 +122,10 @@ async function openRepository(datasetPath: string, storePath: string, options: C
   close?: (() => Promise<void>) | undefined;
 }> {
   if (options.localStore || options.storePath) {
+    const graphStore = await createConfiguredLongMemEvalGraphStore(getContextEngineConfig(), { initialize: false });
     return {
-      repository: new SqliteContextEngineRepository(storePath, undefined, { loadCache: true, readOnly: true })
+      repository: new SqliteContextEngineRepository(storePath, graphStore, { loadCache: true, readOnly: true }),
+      close: () => graphStore.close()
     };
   }
   return openLongMemEvalRepository(datasetPath, {

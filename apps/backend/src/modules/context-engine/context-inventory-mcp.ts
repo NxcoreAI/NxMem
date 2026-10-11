@@ -4,6 +4,7 @@ import { assembleContext, type AssembleContextRequest } from "./assemble-context
 import type { ContextEngineRepository } from "./persistence/repository.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
 import { getContextEngineConfig } from "../../config.js";
+import { createRequiredGraphStore } from "./service-bootstrap.js";
 import { createContextEngineService, type ContextEngineService, type WriteAgentMemoryInput } from "./write-event.js";
 import { maintainFixedBackground } from "./background-maintainer.js";
 import { createSessionBackground } from "./session-background.js";
@@ -221,11 +222,12 @@ export function createContextInventoryMcpServer(
 export async function runContextInventoryMcpServer(
   input: NodeJS.ReadableStream = process.stdin,
   output: NodeJS.WritableStream = process.stdout,
-  repository: ContextEngineRepository = createDefaultInventoryRepository()
+  repository?: ContextEngineRepository
 ) {
-  const server = createContextInventoryMcpServer(repository);
-  const conversationWorker = createConversationIngestionWorker(repository);
-  const timelineFusionScheduler = getTimelineFusionScheduler(repository);
+  const repo = repository ?? await createDefaultInventoryRepository();
+  const server = createContextInventoryMcpServer(repo);
+  const conversationWorker = createConversationIngestionWorker(repo);
+  const timelineFusionScheduler = getTimelineFusionScheduler(repo);
   await timelineFusionScheduler.start();
   conversationWorker.start();
   const lines = createInterface({ input, crlfDelay: Infinity });
@@ -251,9 +253,9 @@ export async function runContextInventoryMcpServer(
   }
 }
 
-function createDefaultInventoryRepository() {
+async function createDefaultInventoryRepository() {
   const config = getContextEngineConfig();
-  return new SqliteContextEngineRepository(config.storage.storePath);
+  return new SqliteContextEngineRepository(config.storage.storePath, await createRequiredGraphStore(config));
 }
 
 function result(id: string | number | null, payload: Record<string, unknown>): JsonRpcResponse {

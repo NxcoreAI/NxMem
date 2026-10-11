@@ -1,5 +1,6 @@
 import { getContextEngineConfig } from "../../config.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
+import { createRequiredGraphStore } from "./service-bootstrap.js";
 import {
   CONTEXT_ENGINE_TEMPORAL_BACKFILL_VERSION,
   runTemporalBackfill
@@ -7,7 +8,10 @@ import {
 
 const versionArgument = process.argv.find((argument) => argument.startsWith("--version="));
 const version = versionArgument?.slice("--version=".length) || CONTEXT_ENGINE_TEMPORAL_BACKFILL_VERSION;
-const repository = new SqliteContextEngineRepository(getContextEngineConfig().storage.storePath);
+const repository = new SqliteContextEngineRepository(
+  getContextEngineConfig().storage.storePath,
+  await createRequiredGraphStore()
+);
 
 try {
   const result = await runTemporalBackfill(repository, { version });

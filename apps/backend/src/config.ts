@@ -410,9 +410,6 @@ export function loadContextEngineConfig(
     env.NEO4J_MEMORY_VECTOR_DIMENSIONS,
     readInteger(neo4jRaw.vectorDimensions, embeddingDimensions)
   );
-  if (graphStoreMode === "neo4j" && (!neo4jUri || !neo4jUsername || !neo4jPassword)) {
-    throw new Error("Neo4j graph store requires NEO4J_URI, NEO4J_USERNAME, and NEO4J_PASSWORD");
-  }
   const baseUrl = env.OPENAI_BASE_URL ?? readString(runtimeLlm.baseUrl, readString(raw.llm?.baseUrl, defaultLlmBaseUrl));
   const model = env.OPENAI_MODEL ?? readString(runtimeLlm.model, readString(raw.llm?.model, defaultLlmModel));
   const judgeBaseUrl = env.LONGMEMEVAL_JUDGE_BASE_URL ?? readString(runtime.judgeLlm?.baseUrl, readString(raw.judgeLlm?.baseUrl, baseUrl));

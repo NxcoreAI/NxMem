@@ -491,6 +491,62 @@ test("LongMemEval single-value times survive Fact to STM to search and Context P
       memory.sourceFactIds.includes(fact.factId)
     )?.memoryDataId;
     assert.ok(memoryDataId);
+
+    // 图节点停写 SQLite 后，跨进程冷读不再有图数据（图归 Neo4j）。
+    // 检索断言在 writer（热 cache）上执行；reader 只验证 SQLite 持久化恢复。
+    const embeddingClient = createDeterministicTestEmbeddingClient(512);
+    const search = await searchContext(writer, {
+      q: "keyboard event",
+      layer: "stm",
+      tenantId: "local",
+      principalId: "longmemeval",
+      contextScopeId: "longmemeval:temporal_chain"
+    }, { embeddingClient });
+    const result = search.results.find((item) => item.id === memoryDataId);
+    assert.ok(result);
+    assert.equal(result.temporal.evidenceTime, fact.evidenceTime);
+    assert.equal(result.temporal.validTime, fact.validTime);
+    assert.equal(result.temporal.evidenceTimeStart, undefined);
+    assert.equal(result.temporal.validTimeStart, undefined);
+    assert.deepEqual(Object.keys(result.temporal).sort(), ["evidenceTime", "validTime"]);
+
+    const validTimeSearch = await searchContext(writer, {
+      q: "keyboard event",
+      layer: "stm",
+      tenantId: "local",
+      principalId: "longmemeval",
+      contextScopeId: "longmemeval:temporal_chain",
+      timeRange: {
+        startTime: "2023-03-25T00:00:00.000Z",
+        endTime: "2023-03-25T23:59:59.999Z",
+        basis: "auto"
+      }
+    }, { embeddingClient });
+    const validTimeResult = validTimeSearch.results.find((item) => item.id === memoryDataId);
+    assert.ok(validTimeResult);
+    assert.deepEqual(Object.keys(validTimeResult.temporal).sort(), ["evidenceTime", "validTime"]);
+
+    const pack = await assembleContext(writer, {
+      task: "When did the keyboard event happen?",
+      q: "keyboard event",
+      layer: "stm",
+      tenantId: "local",
+      principalId: "longmemeval",
+      timezone: "UTC",
+      locale: "en-US",
+      tokenBudget: 600,
+      embeddingClient,
+      recordRetrieval: false
+    });
+    const packItem = pack.recentContext.find((item) => item.id === memoryDataId);
+    assert.ok(packItem);
+    assert.equal(packItem.temporal.evidenceTime, fact.evidenceTime);
+    assert.equal(packItem.temporal.validTime, fact.validTime);
+    assert.equal(packItem.temporal.evidenceTimeStart, undefined);
+    assert.equal(packItem.temporal.validTimeStart, undefined);
+    assert.match(pack.serializedPrompt, /事实时间：2023-03-25 00:00/u);
+    assert.match(pack.serializedPrompt, /消息时间：2023-04-01 00:00/u);
+
     writer.close();
     writer = undefined;
 
@@ -513,63 +569,10 @@ test("LongMemEval single-value times survive Fact to STM to search and Context P
       Object.keys(restored.structuredFacts?.facts[0] ?? {}).filter((key) => key.includes("Time")).sort(),
       ["evidenceTime", "validTime"]
     );
-
-    const embeddingClient = createDeterministicTestEmbeddingClient(512);
-    const search = await searchContext(reader, {
-      q: "keyboard event",
-      layer: "stm",
-      tenantId: "local",
-      principalId: "longmemeval",
-      contextScopeId: "longmemeval:temporal_chain"
-    }, { embeddingClient });
-    const result = search.results.find((item) => item.id === memoryDataId);
-    assert.ok(result);
-    assert.equal(result.temporal.evidenceTime, fact.evidenceTime);
-    assert.equal(result.temporal.validTime, fact.validTime);
-    assert.equal(result.temporal.evidenceTimeStart, undefined);
-    assert.equal(result.temporal.validTimeStart, undefined);
-    assert.deepEqual(Object.keys(result.temporal).sort(), ["evidenceTime", "validTime"]);
     assert.deepEqual(
       reader.findMemoryOwnersByContextScopeId("longmemeval:temporal_chain", ["stm"]).map((owner) => owner.ownerId),
       [memoryDataId]
     );
-
-    const validTimeSearch = await searchContext(reader, {
-      q: "keyboard event",
-      layer: "stm",
-      tenantId: "local",
-      principalId: "longmemeval",
-      contextScopeId: "longmemeval:temporal_chain",
-      timeRange: {
-        startTime: "2023-03-25T00:00:00.000Z",
-        endTime: "2023-03-25T23:59:59.999Z",
-        basis: "auto"
-      }
-    }, { embeddingClient });
-    const validTimeResult = validTimeSearch.results.find((item) => item.id === memoryDataId);
-    assert.ok(validTimeResult);
-    assert.deepEqual(Object.keys(validTimeResult.temporal).sort(), ["evidenceTime", "validTime"]);
-
-    const pack = await assembleContext(reader, {
-      task: "When did the keyboard event happen?",
-      q: "keyboard event",
-      layer: "stm",
-      tenantId: "local",
-      principalId: "longmemeval",
-      timezone: "UTC",
-      locale: "en-US",
-      tokenBudget: 600,
-      embeddingClient,
-      recordRetrieval: false
-    });
-    const packItem = pack.recentContext.find((item) => item.id === memoryDataId);
-    assert.ok(packItem);
-    assert.equal(packItem.temporal.evidenceTime, fact.evidenceTime);
-    assert.equal(packItem.temporal.validTime, fact.validTime);
-    assert.equal(packItem.temporal.evidenceTimeStart, undefined);
-    assert.equal(packItem.temporal.validTimeStart, undefined);
-    assert.match(pack.serializedPrompt, /事实时间：2023-03-25 00:00/u);
-    assert.match(pack.serializedPrompt, /消息时间：2023-04-01 00:00/u);
   } finally {
     writer?.close();
     reader?.close();

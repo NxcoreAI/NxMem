@@ -40,6 +40,7 @@ import type {
   GraphMemoryNodePageQuery,
   GraphRelationEdgePage,
   GraphRelationEdgePageQuery,
+  GraphMemoryNodeRef,
   GraphRelationSearchQuery,
   MaybePromise
 } from "./graph-store.js";
@@ -355,6 +356,7 @@ export interface ContextEngineRepository extends ConversationIngestionRepository
   findMemoryOwnersBySourceIds(sourceIds: string[], ownerTypes?: GraphMemoryOwnerType[]): MaybePromise<MemoryOwnerBySourceHit[]>;
   findMemoryOwnersByContextScopeId(contextScopeId: string, ownerTypes?: GraphMemoryOwnerType[]): MaybePromise<MemoryOwnerBySourceHit[]>;
   getFactItemsByIds(factIds: string[]): MaybePromise<FactItem[]>;
+  hasCompletedMemoryEvents?(eventIds: string[]): Promise<Record<string, boolean>>;
   findFactItemsByEventIds(eventIds: string[]): MaybePromise<FactItem[]>;
   upsertGraphMemoryNode(node: GraphMemoryNode): MaybePromise<void>;
   deleteGraphMemoryNode(ownerType: GraphMemoryOwnerType, ownerId: string): MaybePromise<void>;
@@ -364,6 +366,7 @@ export interface ContextEngineRepository extends ConversationIngestionRepository
   searchGraphRelationEdges(query: GraphRelationSearchQuery): MaybePromise<RelationEdge[]>;
   listGraphMemoryNodes(query: GraphMemoryNodePageQuery): MaybePromise<GraphMemoryNodePage>;
   listGraphRelationEdges(query: GraphRelationEdgePageQuery): MaybePromise<GraphRelationEdgePage>;
+  listGraphNodeRefs?(ownerTypes?: GraphMemoryOwnerType[]): MaybePromise<GraphMemoryNodeRef[]>;
   deleteIndexEntry(indexId: string): Promise<void>;
   deleteTextIndexEntry(indexId: string): Promise<void>;
   deleteVectorIndexEntry(indexId: string): Promise<void>;

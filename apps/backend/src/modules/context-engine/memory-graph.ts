@@ -1,4 +1,4 @@
-import type { LongTermMemory, RelationEdge, ShortTermMemory } from "./domain.js";
+import type { FactItem, LongTermMemory, RelationEdge, ShortTermMemory } from "./domain.js";
 import type { ContextEngineRepository } from "./persistence/repository.js";
 
 type RelationType = RelationEdge["relationType"];
@@ -71,6 +71,50 @@ export async function reconcileMemoryGraphForLongTermMemory(
     .map(longTermNode);
   saved.push(...await saveRelations(repository, target, candidates));
   return saved;
+}
+
+// 实体倒排避免 fact×memory 两两比较：10 万 fact 对 1 万 memory 是 10 亿次比较。
+export async function reconcileMemoryGraphForFacts(
+  repository: ContextEngineRepository,
+  facts: readonly FactItem[]
+) {
+  const snapshot = repository.getDebugSnapshot();
+  const memoriesByEntity = new Map<string, Set<string>>();
+  const index = (ownerId: string, entityIds: string[]) => {
+    for (const entityId of entityIds) {
+      const owners = memoriesByEntity.get(entityId) ?? new Set<string>();
+      owners.add(ownerId);
+      memoriesByEntity.set(entityId, owners);
+    }
+  };
+  for (const memory of snapshot.shortTermMemories) index(memory.memoryDataId, memory.entityIds);
+  for (const memory of snapshot.longTermMemories) index(memory.memoryId, memory.entityIds);
+
+  const saved: RelationEdge[] = [];
+  for (const fact of facts) {
+    if (!fact.entityIds.length) continue;
+    const matchedOwnerIds = new Set<string>();
+    for (const entityId of fact.entityIds) {
+      for (const ownerId of memoriesByEntity.get(entityId) ?? []) matchedOwnerIds.add(ownerId);
+    }
+    for (const ownerId of matchedOwnerIds) {
+      const edge = factMemoryEdge(fact.factId, ownerId);
+      await repository.saveRelationEdge(edge);
+      saved.push(edge);
+    }
+  }
+  return saved;
+}
+
+function factMemoryEdge(factId: string, memoryOwnerId: string): RelationEdge {
+  const [fromId, toId] = [factId, memoryOwnerId].sort();
+  return {
+    edgeId: `edge_related_to_${sanitizeEdgePart(fromId)}_${sanitizeEdgePart(toId)}`,
+    fromId,
+    toId,
+    relationType: "related_to",
+    evidence: "shared_entity"
+  };
 }
 
 async function saveRelations(

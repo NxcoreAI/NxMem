@@ -20,6 +20,7 @@
     "reindex:embeddings": "node --import tsx src/modules/context-engine/embedding-reindex-cli.ts",
     "reindex:text": "node --import tsx src/modules/context-engine/text-index-reindex-cli.ts",
     "reindex:facts": "node --import tsx src/modules/context-engine/fact-index-reindex-cli.ts",
+    "migrate:graph": "node --import tsx src/modules/context-engine/graph-to-neo4j-migration-cli.ts",
     "restore:dreaming-stm": "node --import tsx src/modules/context-engine/dreaming-stm-recovery-cli.ts"
   },
   "dependencies": {
