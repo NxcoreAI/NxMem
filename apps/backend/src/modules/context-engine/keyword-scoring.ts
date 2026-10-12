@@ -20,14 +20,38 @@ export interface KeywordScoreDetails {
   similarCoverage: number;
 }
 
+// corpus 级 normalize+分词缓存：25 万条 corpus 若每题重新分词是主线程主要瓶颈。
+// WeakMap 以 corpus 数组引用为键，与 repository 的 corpus 实例缓存同生命周期。
+const corpusTokensCache = new WeakMap<readonly string[], Array<ReadonlySet<string>>>();
+
+function corpusTokenSets(contents: readonly string[]): Array<ReadonlySet<string>> {
+  let cached = corpusTokensCache.get(contents);
+  if (!cached) {
+    cached = contents.map((content) => new Set(lexicalTokens(normalizeKeywordText(content))));
+    corpusTokensCache.set(contents, cached);
+  }
+  return cached;
+}
+
 export function buildKeywordCorpusStats(contents: string[], queryTokens: string[]): KeywordCorpusStats {
   const uniqueQueryTokens = uniqueTokens(queryTokens);
   const documentFrequency = new Map(uniqueQueryTokens.map((token) => [token, 0]));
-  for (const content of contents) {
-    const normalized = normalizeKeywordText(content);
-    for (const token of uniqueQueryTokens) {
-      if (hasExactToken(normalized, token)) {
-        documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+  const hanTokens = new Set(uniqueQueryTokens.filter(containsHan));
+  const nonHanTokens = uniqueQueryTokens.filter((token) => !containsHan(token));
+  const tokenSets = corpusTokenSets(contents);
+  for (const tokens of tokenSets) {
+    for (const token of nonHanTokens) {
+      if (tokens.has(token)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+    }
+    if (!hanTokens.size) continue;
+    // 中文 token 的 hasExactToken 走子串；corpus 缓存只覆盖分词集合，这里保留原文匹配
+    // （LongMemEval 语料以英文为主，中文语料回退原实现成本）
+  }
+  if (hanTokens.size) {
+    for (const content of contents) {
+      const normalized = normalizeKeywordText(content);
+      for (const token of hanTokens) {
+        if (normalized.includes(token)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
       }
     }
   }
