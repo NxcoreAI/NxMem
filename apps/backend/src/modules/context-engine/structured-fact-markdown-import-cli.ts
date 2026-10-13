@@ -5,6 +5,7 @@ import { getContextEngineConfig } from "../../config.js";
 import { reconcileGeneratedShortTermMemoryIndexes } from "./service-bootstrap.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
 import { Neo4jGraphMemoryStore } from "./persistence/neo4j-graph-store.js";
+import { assertNeo4jCredentials } from "./persistence/graph-store.js";
 import {
   importStructuredFactMarkdown,
   parseStructuredFactMarkdown,
@@ -44,13 +45,12 @@ async function main() {
     return;
   }
 
-  const graphStore = config.graphStore.mode === "neo4j"
-    ? Neo4jGraphMemoryStore.fromConfig(config)
-    : undefined;
+  assertNeo4jCredentials(config.graphStore.neo4j, "graphStore.neo4j");
+  const graphStore = Neo4jGraphMemoryStore.fromConfig(config);
   let repository: SqliteContextEngineRepository | undefined;
 
   try {
-    if (graphStore) await graphStore.initialize();
+    await graphStore.initialize();
     repository = new SqliteContextEngineRepository(config.storage.storePath, graphStore);
     await reconcileGeneratedShortTermMemoryIndexes(repository);
     const report = await importStructuredFactMarkdown(repository, dataset, {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ContextEngineConfig } from "../../config.js";
-import type { GraphMemoryStore } from "./persistence/graph-store.js";
+import { assertNeo4jCredentials, type GraphMemoryStore } from "./persistence/graph-store.js";
 import { Neo4jGraphMemoryStore } from "./persistence/neo4j-graph-store.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
 
@@ -29,10 +29,9 @@ export async function openLocomoEvaluationRepository(input: {
 export async function createConfiguredLocomoGraphStore(
   config: ContextEngineConfig,
   options: { initialize?: boolean } = {}
-): Promise<GraphMemoryStore | undefined> {
-  const mode = graphMode(config);
-  if (mode === "local") return undefined;
+): Promise<GraphMemoryStore> {
   const source = graphConfig(config);
+  assertNeo4jCredentials(source, config.locomoEvaluation.graphStore.mode === "neo4j" ? "locomoEvaluation.graphStore.neo4j" : "graphStore.neo4j");
   const graphStore = new Neo4jGraphMemoryStore({
     uri: source.uri,
     username: source.username,
@@ -47,7 +46,6 @@ export async function createConfiguredLocomoGraphStore(
 }
 
 export function locomoGraphFingerprint(config: ContextEngineConfig) {
-  if (graphMode(config) === "local") return "local";
   const source = graphConfig(config);
   return createHash("sha256").update(JSON.stringify({
     mode: "neo4j",
@@ -58,10 +56,6 @@ export function locomoGraphFingerprint(config: ContextEngineConfig) {
     vectorIndexName: namespacedIndex(source.vectorIndexName, "vector"),
     vectorDimensions: source.vectorDimensions
   })).digest("hex");
-}
-
-function graphMode(config: ContextEngineConfig) {
-  return config.locomoEvaluation.graphStore.mode === "inherit" ? config.graphStore.mode : config.locomoEvaluation.graphStore.mode;
 }
 
 function graphConfig(config: ContextEngineConfig) {

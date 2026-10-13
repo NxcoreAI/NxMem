@@ -802,7 +802,7 @@ export interface ContextVectorIndexEntry {
   refreshedAt: string;
 }
 
-export type GraphMemoryOwnerType = "stm" | "ltm";
+export type GraphMemoryOwnerType = "stm" | "ltm" | "fact";
 
 export interface GraphMemoryNode extends MemoryTemporalMetadata {
   graphNodeId: Id;
@@ -817,11 +817,15 @@ export interface GraphMemoryNode extends MemoryTemporalMetadata {
   sourceRefs: SourceRef[];
   entityIds: Id[];
   refreshedAt: string;
+  tenantId?: Id;
+  principalId?: Id;
 }
 
 export interface GraphMemorySearchOptions {
   ownerTypes?: GraphMemoryOwnerType[];
   ownerKeys?: string[];
+  tenantId?: Id;
+  principalId?: Id;
   temporalRange?: {
     startTime: string;
     endTime: string;

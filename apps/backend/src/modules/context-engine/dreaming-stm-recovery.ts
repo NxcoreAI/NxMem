@@ -40,8 +40,9 @@ export async function recoverDreamingRemovedShortTermMemories(input: {
   const sourceById = new Map(sourceSnapshot.shortTermMemories.map((memory) => [memory.memoryDataId, memory]));
   const currentById = new Map(targetSnapshot.shortTermMemories.map((memory) => [memory.memoryDataId, memory]));
   const primaryIndexIds = new Set(targetSnapshot.indexEntries.filter((entry) => entry.ownerType === "stm").map((entry) => entry.ownerId));
-  const vectorIndexIds = new Set(targetSnapshot.vectorIndexEntries.filter((entry) => entry.ownerType === "stm").map((entry) => entry.ownerId));
-  const graphNodeIds = new Set(targetSnapshot.graphMemoryNodes.filter((node) => node.ownerType === "stm").map((node) => node.ownerId));
+  const graphRefIds = new Set((await input.target.listGraphNodeRefs?.(["stm"]) ?? [])
+    .filter((ref) => ref.vectorLength > 0)
+    .map((ref) => ref.ownerId));
   const completedRecoveryIds = new Set(targetSnapshot.changeEvents
     .filter((event) => event.reason === "dreaming_stm_restored_non_destructive" && event.memoryDataId)
     .map((event) => event.memoryDataId!));
@@ -77,8 +78,7 @@ export async function recoverDreamingRemovedShortTermMemories(input: {
       if (
         completedRecoveryIds.has(memoryDataId) &&
         primaryIndexIds.has(memoryDataId) &&
-        vectorIndexIds.has(memoryDataId) &&
-        graphNodeIds.has(memoryDataId)
+        graphRefIds.has(memoryDataId)
       ) {
         skippedExisting += 1;
       } else {

@@ -20,7 +20,7 @@ import {
 } from "./search-context.js";
 import type { ContextDebugSnapshot, ContextEngineRepository } from "./persistence/repository.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
-import type { GraphMemoryStore } from "./persistence/graph-store.js";
+import { assertNeo4jCredentials, type GraphMemoryStore } from "./persistence/graph-store.js";
 import { Neo4jGraphMemoryStore } from "./persistence/neo4j-graph-store.js";
 import { buildTimelineAggregatedFacts, type TimelineAggregatedFact } from "./timeline-aggregation.js";
 import type { ContextPackTrace, FactItem, MemoryEvent, RelationEdge, ShortTermMemory, SourceRef } from "./domain.js";
@@ -6549,18 +6549,15 @@ async function createLongMemEvalRepository(
     };
   }
 
-  if (readLongMemEvalGraphStoreMode(config) === "local") {
-    return {
-      repository: new SqliteContextEngineRepository(storePath, undefined, repositoryOptions),
-      close: undefined
-    };
-  }
+  const source = config.longMemEval.graphStore.mode === "neo4j"
+    ? config.longMemEval.graphStore.neo4j
+    : config.graphStore.neo4j;
+  assertNeo4jCredentials(source, config.longMemEval.graphStore.mode === "neo4j" ? "longMemEval.graphStore.neo4j" : "graphStore.neo4j");
 
   try {
     const graphStore = await createConfiguredLongMemEvalGraphStore(config, {
       initialize: !options.readOnly
     });
-    if (!graphStore) throw new Error("neo4j_graph_store_not_created");
     const repository = new SqliteContextEngineRepository(storePath, graphStore, repositoryOptions);
     return {
       repository,
@@ -7196,8 +7193,6 @@ export async function createConfiguredLongMemEvalGraphStore(
   config = getContextEngineConfig(),
   options: { initialize?: boolean } = {}
 ) {
-  const mode = readLongMemEvalGraphStoreMode(config);
-  if (mode === "local") return undefined;
   const graphStore = config.longMemEval.graphStore.mode === "neo4j"
     ? new Neo4jGraphMemoryStore({
       uri: config.longMemEval.graphStore.neo4j.uri,
@@ -7211,12 +7206,6 @@ export async function createConfiguredLongMemEvalGraphStore(
     : Neo4jGraphMemoryStore.fromConfig(config);
   if (options.initialize !== false) await graphStore.initialize();
   return graphStore;
-}
-
-export function readLongMemEvalGraphStoreMode(config: ReturnType<typeof getContextEngineConfig>) {
-  return config.longMemEval.graphStore.mode === "inherit"
-    ? config.graphStore.mode
-    : config.longMemEval.graphStore.mode;
 }
 
 function readQuestionId(sample: LongMemEvalSample) {

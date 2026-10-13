@@ -8,6 +8,7 @@ import {
 import { isLongTermRecallEligible, isShortTermRecallEligible } from "./lifecycle.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
 import { Neo4jGraphMemoryStore } from "./persistence/neo4j-graph-store.js";
+import { assertNeo4jCredentials } from "./persistence/graph-store.js";
 import type { ContextEngineRepository } from "./persistence/repository.js";
 
 export interface EmbeddingReindexProgress {
@@ -35,13 +36,12 @@ export async function reindexConfiguredRepositoryEmbeddings(input: {
   const client = input.embeddingClient ?? createEmbeddingClient(config.embedding);
   await probeEmbedding(client);
 
-  const graphStore = input.repository || config.graphStore.mode !== "neo4j"
-    ? undefined
-    : Neo4jGraphMemoryStore.fromConfig(config);
+  const graphStore = input.repository ? undefined : Neo4jGraphMemoryStore.fromConfig(config);
   let ownedRepository: SqliteContextEngineRepository | undefined;
 
   try {
     if (graphStore) {
+      assertNeo4jCredentials(config.graphStore.neo4j, "graphStore.neo4j");
       await graphStore.initialize({ createVectorIndex: false });
       await graphStore.dropVectorIndex();
     }

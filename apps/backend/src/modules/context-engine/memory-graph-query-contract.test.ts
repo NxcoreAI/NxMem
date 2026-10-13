@@ -50,7 +50,6 @@ test("parseMemoryGraphQueryRequest strictly rejects invalid queries", () => {
     { nodePage: { unexpected: true } },
     { layers: [], nodePage: {} },
     { layers: ["stm", "stm"], nodePage: {} },
-    { layers: ["fact"], nodePage: {} },
     { relationTypes: [], nodePage: {} },
     { relationTypes: ["unknown"], nodePage: {} },
     { nodePage: { limit: 0 } },

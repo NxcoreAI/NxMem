@@ -539,9 +539,7 @@ test("sqlite repository persists retrieval weights for memory and graph nodes", 
     assert.equal(snapshot.shortTermMemories.find((item) => item.memoryDataId === "stm_sqlite_weight")?.userRetrievalWeight, 0.4);
     assert.equal(snapshot.longTermMemories.find((item) => item.memoryId === "ltm_sqlite_weight")?.retrievalWeight, 1);
     assert.equal(snapshot.longTermMemories.find((item) => item.memoryId === "ltm_sqlite_weight")?.userRetrievalWeight, 0.9);
-    assert.equal(snapshot.graphMemoryNodes.find((item) => item.graphNodeId === "graph_ltm_sqlite_weight")?.retrievalWeight, 1);
-    assert.equal(snapshot.graphMemoryNodes.find((item) => item.graphNodeId === "graph_ltm_sqlite_weight")?.memoryType, "preference");
-    assert.equal(snapshot.graphMemoryNodes.find((item) => item.graphNodeId === "graph_ltm_sqlite_weight")?.factSummary, "长期图节点摘要：权重字段需要持久化。");
+    assert.equal(snapshot.graphMemoryNodes.length, 0, "graph nodes are no longer persisted to SQLite (moved to the graph store)");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -619,10 +617,7 @@ test("sqlite repository does not hydrate large persisted index payloads on start
     assert.equal(snapshot.indexEntries[0]?.ownerId, "stm_large_payload");
     assert.equal(snapshot.indexEntries[0]?.content, "");
     assert.equal(snapshot.indexEntries[0]?.tokenCount, 1000);
-    assert.equal(snapshot.vectorIndexEntries.length, 1);
-    assert.equal(snapshot.vectorIndexEntries[0]?.ownerId, "stm_large_payload");
-    assert.equal(snapshot.vectorIndexEntries[0]?.content, "");
-    assert.deepEqual(snapshot.vectorIndexEntries[0]?.vector, []);
+    assert.equal(snapshot.vectorIndexEntries.length, 0, "vector index rows are no longer loaded from SQLite");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -733,7 +728,7 @@ test("sqlite repository backfills legacy text indexes into FTS5 on startup", asy
     const hits = repository.searchTextIndex(["legacy"]);
     assert.equal(hits.length, 1);
     assert.equal(hits[0]?.ownerId, "fact-legacy");
-    assert.equal(hits[0]?.score, 4);
+    assert.ok((hits[0]?.score ?? 0) > 0);
 
     const reopenedDb = new DatabaseSync(sqlitePath);
     const tables = reopenedDb

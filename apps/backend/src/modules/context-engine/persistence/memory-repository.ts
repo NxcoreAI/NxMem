@@ -110,6 +110,7 @@ import {
   type GraphRelationSearchQuery,
   type MaybePromise
 } from "./graph-store.js";
+import { InMemoryGraphMemoryStore } from "./in-memory-graph-store.js";
 import {
   ConversationRepositoryError,
   type BackfillConversationMessagesRequest,
@@ -314,7 +315,7 @@ interface ConversationDocumentsMigrationPreflight {
 }
 
 export class InMemoryContextEngineRepository implements ContextEngineRepository {
-  protected readonly graphStore: GraphMemoryStore | undefined;
+  protected readonly graphStore: GraphMemoryStore;
   readonly memoryEvents: MemoryEvent[] = [];
   readonly parsedSegments: ParsedSegment[] = [];
   readonly facts: FactItem[] = [];
@@ -365,7 +366,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
   readonly conversationTemporalBackfillMigrations: ConversationTemporalBackfillMigrationRecord[] = [];
 
   constructor(graphStore?: GraphMemoryStore) {
-    this.graphStore = graphStore;
+    this.graphStore = graphStore ?? new InMemoryGraphMemoryStore(this);
   }
 
   protected get cache() {
@@ -1667,31 +1668,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   async saveRelationEdge(edge: RelationEdge) {
     replaceById(this.cache.relationEdges, edge, "edgeId");
-    this.exec(
-      `INSERT INTO relation_edges (edge_id, from_id, to_id, relation_type, evidence, strength, confidence, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(edge_id) DO UPDATE SET
-         from_id=excluded.from_id,
-         to_id=excluded.to_id,
-         relation_type=excluded.relation_type,
-         evidence=excluded.evidence,
-         strength=excluded.strength,
-         confidence=excluded.confidence,
-         source=excluded.source,
-         created_at=excluded.created_at`,
-      [
-        edge.edgeId,
-        edge.fromId,
-        edge.toId,
-        edge.relationType,
-        edge.evidence ?? null,
-        edge.strength ?? null,
-        edge.confidence ?? null,
-        edge.source ?? null,
-        edge.createdAt ?? null
-      ]
-    );
-    await this.graphStore?.upsertGraphRelationEdge(edge);
+    await this.graphStore.upsertGraphRelationEdge(edge);
   }
 
   async saveContextPackTrace(trace: ContextPackTrace) {
@@ -2122,9 +2099,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
       .filter((edge) => edge.fromId === memoryDataId || edge.toId === memoryDataId)
       .map((edge) => edge.edgeId);
     removeWhere(this.cache.relationEdges, (edge) => edge.fromId === memoryDataId || edge.toId === memoryDataId);
-    for (const edgeId of relationEdgeIds) {
-      this.exec(`DELETE FROM relation_edges WHERE edge_id = ?`, [edgeId]);
-    }
+    await this.graphStore.deleteGraphRelationEdges(relationEdgeIds);
     await this.deleteIndexBundle("stm", memoryDataId);
   }
 
@@ -2245,18 +2220,6 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
 
   async saveVectorIndexEntry(entry: ContextVectorIndexEntry) {
     replaceById(this.cache.vectorIndexEntries, entry, "indexId");
-    this.exec(
-      `INSERT INTO context_vector_index_entries (index_id, owner_id, owner_type, content, vector, lifecycle_status, refreshed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(index_id) DO UPDATE SET
-         owner_id=excluded.owner_id,
-         owner_type=excluded.owner_type,
-         content=excluded.content,
-         vector=excluded.vector,
-         lifecycle_status=excluded.lifecycle_status,
-         refreshed_at=excluded.refreshed_at`,
-      [entry.indexId, entry.ownerId, entry.ownerType, entry.content, JSON.stringify(entry.vector), entry.lifecycleStatus, entry.refreshedAt]
-    );
   }
 
   searchTextIndex(queryTokens: string[]): TextIndexSearchHit[] {
@@ -2287,15 +2250,19 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
       .slice(0, query.limit ?? 100);
   }
 
-  searchFactVector(queryVector: number[], query: FactIndexSearchQuery = {}): FactIndexSearchHit[] {
+  async searchFactVector(queryVector: number[], query: FactIndexSearchQuery = {}): Promise<FactIndexSearchHit[]> {
     if (!queryVector.length) return [];
+    const hits = await this.graphStore.searchGraphVector(queryVector, {
+      ownerTypes: ["fact"],
+      ...(query.tenantId ? { tenantId: query.tenantId } : {}),
+      ...(query.principalId ? { principalId: query.principalId } : {})
+    });
     const factById = new Map(this.cache.facts.map((fact) => [fact.factId, fact]));
-    return this.cache.vectorIndexEntries
-      .filter((entry) => entry.ownerType === "fact")
-      .flatMap((entry) => {
-        const fact = factById.get(entry.ownerId);
+    return hits
+      .flatMap((hit) => {
+        const fact = factById.get(hit.ownerId);
         return fact && factMatchesIndexQuery(fact, query)
-          ? [{ factId: fact.factId, score: cosine(queryVector, entry.vector) }]
+          ? [{ factId: fact.factId, score: hit.score }]
           : [];
       })
       .filter((hit) => hit.score > 0)
@@ -2464,114 +2431,51 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
   }
 
   async upsertGraphMemoryNode(node: GraphMemoryNode) {
-    replaceById(this.cache.graphMemoryNodes, node, "graphNodeId");
-    await this.graphStore?.upsertGraphMemoryNode(node);
-    await this.syncGraphRelationEdgesForOwner(node.ownerId);
+    const { factSummary, ...nodeWithoutFactSummary } = node;
+    const normalizedFactSummary = normalizeFactSummary(factSummary);
+    const normalizedNode: GraphMemoryNode = {
+      ...nodeWithoutFactSummary,
+      ...(normalizedFactSummary ? { factSummary: normalizedFactSummary } : {})
+    };
+    replaceById(this.cache.graphMemoryNodes, normalizedNode, "graphNodeId");
+    await this.graphStore.upsertGraphMemoryNode(normalizedNode);
+    await this.syncGraphRelationEdgesForOwner(normalizedNode.ownerId);
   }
 
   async deleteGraphMemoryNode(ownerType: GraphMemoryOwnerType, ownerId: string) {
     removeWhere(this.cache.graphMemoryNodes, (node) => node.ownerType === ownerType && node.ownerId === ownerId);
-    await this.graphStore?.deleteGraphMemoryNode(ownerType, ownerId);
+    await this.graphStore.deleteGraphMemoryNode(ownerType, ownerId);
   }
 
   searchGraphText(queryTokens: string[], options: GraphMemorySearchOptions = {}): MaybePromise<GraphMemorySearchHit[]> {
-    if (this.graphStore) return this.graphStore.searchGraphText(queryTokens, options);
-    const normalizedTokens = expandSearchTokens(queryTokens.map((token) => token.toLowerCase()));
-    if (!normalizedTokens.length) return [];
-    return this.filterGraphNodes(options)
-      .map((node) => {
-        const normalizedContent = node.content.toLowerCase();
-        const matchedTerms = normalizedTokens.filter((token) => normalizedContent.includes(token)).length;
-        return {
-          ownerType: node.ownerType,
-          ownerId: node.ownerId,
-          score: matchedTerms,
-          matchedTerms
-        };
-      })
-      .filter((hit) => hit.score > 0)
-      .sort((left, right) => right.score - left.score || left.ownerType.localeCompare(right.ownerType) || left.ownerId.localeCompare(right.ownerId));
+    return this.graphStore.searchGraphText(queryTokens, options);
   }
 
   searchGraphVector(queryVector: number[], options: GraphMemorySearchOptions = {}): MaybePromise<GraphMemorySearchHit[]> {
-    if (this.graphStore) return this.graphStore.searchGraphVector(queryVector, options);
-    if (!queryVector.length) return [];
-    return this.filterGraphNodes(options)
-      .map((node) => ({
-        ownerType: node.ownerType,
-        ownerId: node.ownerId,
-        score: cosine(queryVector, node.vector)
-      }))
-      .filter((hit) => hit.score > 0)
-      .sort((left, right) => right.score - left.score || left.ownerType.localeCompare(right.ownerType) || left.ownerId.localeCompare(right.ownerId));
+    return this.graphStore.searchGraphVector(queryVector, options);
   }
 
   getGraphRelationEdges(ownerId: string): MaybePromise<RelationEdge[]> {
-    if (this.graphStore) return this.graphStore.getGraphRelationEdges(ownerId);
-    return this.cache.relationEdges.filter((edge) => edge.fromId === ownerId || edge.toId === ownerId);
+    return this.graphStore.getGraphRelationEdges(ownerId);
   }
 
   searchGraphRelationEdges(query: GraphRelationSearchQuery): MaybePromise<RelationEdge[]> {
-    if (this.graphStore) return this.graphStore.searchGraphRelationEdges(query);
-    const relationTypes = query.relationTypes?.filter(Boolean);
-    const ownerTypes = query.ownerTypes?.filter(Boolean);
-    const evidenceQuery = query.q?.trim().toLowerCase();
-    const offset = Math.max(0, query.offset ?? 0);
-    const limit = Math.max(0, query.limit ?? 50);
-    const matches = this.cache.relationEdges
-      .filter((edge) => !query.fromId || edge.fromId === query.fromId)
-      .filter((edge) => !query.toId || edge.toId === query.toId)
-      .filter((edge) => !relationTypes?.length || relationTypes.includes(edge.relationType))
-      .filter((edge) => {
-        if (!ownerTypes?.length) return true;
-        const fromOwnerType = memoryOwnerTypeForId(edge.fromId);
-        const toOwnerType = memoryOwnerTypeForId(edge.toId);
-        return Boolean((fromOwnerType && ownerTypes.includes(fromOwnerType)) || (toOwnerType && ownerTypes.includes(toOwnerType)));
-      })
-      .filter((edge) => !evidenceQuery || (edge.evidence ?? "").toLowerCase().includes(evidenceQuery))
-      .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "") || left.edgeId.localeCompare(right.edgeId));
-    return matches.slice(offset, offset + limit);
+    return this.graphStore.searchGraphRelationEdges(query);
   }
 
   listGraphMemoryNodes(query: GraphMemoryNodePageQuery): MaybePromise<GraphMemoryNodePage> {
-    if (this.graphStore) return this.graphStore.listGraphMemoryNodes(query);
-    const offset = Math.max(0, query.offset ?? 0);
-    const rows = this.cache.graphMemoryNodes
-      .filter((node) => query.ownerTypes.includes(node.ownerType))
-      .filter((node) => !query.after || graphMemoryNodeIsAfter(node, query.after))
-      .sort(compareGraphMemoryNodes)
-      .slice(offset, offset + query.limit + 1);
-    return {
-      nodes: rows.slice(0, query.limit).map(cloneGraphMemoryNode),
-      hasMore: rows.length > query.limit
-    };
+    return this.graphStore.listGraphMemoryNodes(query);
   }
 
   listGraphRelationEdges(query: GraphRelationEdgePageQuery): MaybePromise<GraphRelationEdgePage> {
-    if (this.graphStore) return this.graphStore.listGraphRelationEdges(query);
-    const offset = Math.max(0, query.offset ?? 0);
-    const nodeOwnerTypes = new Map<string, Set<GraphMemoryOwnerType>>();
-    for (const node of this.cache.graphMemoryNodes) {
-      const ownerTypes = nodeOwnerTypes.get(node.ownerId) ?? new Set<GraphMemoryOwnerType>();
-      ownerTypes.add(node.ownerType);
-      nodeOwnerTypes.set(node.ownerId, ownerTypes);
-    }
-    const endpointIsIncluded = (ownerId: string) =>
-      [...(nodeOwnerTypes.get(ownerId) ?? [])].some((ownerType) => query.ownerTypes.includes(ownerType));
-    const rows = this.cache.relationEdges
-      .filter((edge) => endpointIsIncluded(edge.fromId) && endpointIsIncluded(edge.toId))
-      .filter((edge) => query.relationTypes.includes(edge.relationType))
-      .filter((edge) => !query.after || edge.edgeId > query.after.id)
-      .sort((left, right) => compareText(left.edgeId, right.edgeId))
-      .slice(offset, offset + query.limit + 1);
-    return {
-      edges: rows.slice(0, query.limit).map(cloneRelationEdge),
-      hasMore: rows.length > query.limit
-    };
+    return this.graphStore.listGraphRelationEdges(query);
+  }
+
+  listGraphNodeRefs(ownerTypes?: GraphMemoryOwnerType[]): MaybePromise<Array<{ ownerType: GraphMemoryOwnerType; ownerId: string; vectorLength: number }>> {
+    return this.graphStore.listGraphNodeRefs?.(ownerTypes) ?? [];
   }
 
   private async syncGraphRelationEdgesForOwner(ownerId: string) {
-    if (!this.graphStore) return;
     const edges = this.cache.relationEdges.filter((edge) => edge.fromId === ownerId || edge.toId === ownerId);
     for (const edge of edges) {
       await this.graphStore.upsertGraphRelationEdge(edge);
@@ -2596,9 +2500,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     await this.deleteIndexEntry(baseIndexId);
     await this.deleteVectorIndexEntry(baseIndexId);
     removeWhere(this.textIndexEntries, (entry) => entry.ownerType === ownerType && entry.ownerId === ownerId);
-    if (ownerType === "stm" || ownerType === "ltm") {
-      await this.deleteGraphMemoryNode(ownerType, ownerId);
-    }
+    await this.deleteGraphMemoryNode(ownerType, ownerId);
   }
 
   async saveMemoryChangeEvent(event: MemoryChangeEvent) {
@@ -3277,9 +3179,6 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
       this.exec(`DELETE FROM long_term_memories WHERE memory_id = ?`, [memoryId]);
       await this.deleteIndexBundle("ltm", memoryId);
     }
-    for (const edgeId of deletedRelationEdgeIds) {
-      this.exec(`DELETE FROM relation_edges WHERE edge_id = ?`, [edgeId]);
-    }
     for (const traceId of deletedPackTraceIds) {
       this.exec(`DELETE FROM context_pack_traces WHERE trace_id = ?`, [traceId]);
     }
@@ -3298,7 +3197,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     for (const changeEventId of deletedChangeEventIds) {
       this.exec(`DELETE FROM memory_change_events WHERE event_id = ?`, [changeEventId]);
     }
-    await this.graphStore?.deleteGraphRelationEdges(deletedRelationEdgeIds);
+    await this.graphStore.deleteGraphRelationEdges(deletedRelationEdgeIds);
 
     if (options.recordChangeEvent !== false) {
       await this.saveMemoryChangeEvent({
@@ -3389,7 +3288,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     this.cache.conversationExtractionWindows.length = 0;
     this.cache.conversationFactCandidates.length = 0;
     this.cache.conversationDocumentMessageRows.length = 0;
-    await this.graphStore?.clearGraph();
+    await this.graphStore.clearGraph();
     return { deleted };
   }
 
@@ -3601,23 +3500,6 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     };
   }
 
-  private filterGraphNodes(options: GraphMemorySearchOptions): GraphMemoryNode[] {
-    const ownerTypes = new Set(options.ownerTypes ?? ["stm", "ltm"]);
-    const ownerKeys = options.ownerKeys ? new Set(options.ownerKeys) : undefined;
-    return this.cache.graphMemoryNodes.filter((node) =>
-      ownerTypes.has(node.ownerType) &&
-      this.hasGraphNodeOwner(node) &&
-      (!ownerKeys || ownerKeys.has(`${node.ownerType}:${node.ownerId}`)) &&
-      (!options.temporalRange || memoryTemporalEnvelopeIntersects(node, options.temporalRange))
-    );
-  }
-
-  private hasGraphNodeOwner(node: GraphMemoryNode) {
-    if (node.ownerType === "stm") {
-      return this.cache.shortTermMemories.some((memory) => memory.memoryDataId === node.ownerId);
-    }
-    return this.cache.longTermMemories.some((memory) => memory.memoryId === node.ownerId);
-  }
 }
 
 export class FileBackedContextEngineRepository extends InMemoryContextEngineRepository {
@@ -4641,6 +4523,27 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       .prepare(`SELECT 1 AS present FROM memory_events WHERE event_id = ? LIMIT 1`)
       .get(eventId) as { present?: number } | undefined;
     return Boolean(row?.present);
+  }
+
+  override async hasCompletedMemoryEvents(eventIds: string[]): Promise<Record<string, boolean>> {
+    const result: Record<string, boolean> = {};
+    if (!eventIds.length) return result;
+    const wanted = [...new Set(eventIds)];
+    const succeeded = new Set<string>();
+    for (const batch of chunkSqlValues(wanted)) {
+      const placeholders = sqlPlaceholders(batch.length);
+      for (const row of this.db.prepare(`
+        SELECT t.event_id AS eventId
+        FROM context_pipeline_tasks t
+        JOIN memory_events e ON e.event_id = t.event_id
+        WHERE t.event_id IN (${placeholders}) AND t.status = 'succeeded'
+      `).all(...batch) as Array<{ eventId?: unknown }>) {
+        const eventId = row.eventId;
+        if (typeof eventId === "string") succeeded.add(eventId);
+      }
+    }
+    for (const eventId of wanted) result[eventId] = succeeded.has(eventId);
+    return result;
   }
 
   override getPipelineTaskByEventId(eventId: string) {
@@ -6281,6 +6184,15 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
   }
 
   private migrateShortTermMemoryOwnerAndTime() {
+    // ponytail: 大迁移查询含 json_each 笛卡尔展开 + 无索引子查询，万级 STM 上要跑几十分钟；
+    // owner/时间戳已齐的库直接跳过（该查询仅用于回填 NULL 列）
+    const alreadyMigrated = (this.db.prepare(`
+      SELECT 1 AS missing FROM short_term_memories
+      WHERE tenant_id IS NULL OR principal_id IS NULL OR created_at IS NULL OR updated_at IS NULL
+      LIMIT 1
+    `).get() as { missing?: number } | undefined) === undefined;
+    if (alreadyMigrated) return;
+
     this.db.exec("BEGIN IMMEDIATE;");
     try {
       this.addColumnIfMissing("short_term_memories", "tenant_id", "TEXT");
@@ -7239,63 +7151,6 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     );
   }
 
-  override async upsertGraphMemoryNode(node: GraphMemoryNode) {
-    const { factSummary, ...nodeWithoutFactSummary } = node;
-    const normalizedFactSummary = normalizeFactSummary(factSummary);
-    const normalizedNode: GraphMemoryNode = {
-      ...nodeWithoutFactSummary,
-      ...(normalizedFactSummary ? { factSummary: normalizedFactSummary } : {})
-    };
-    await super.upsertGraphMemoryNode(normalizedNode);
-    this.exec(
-      `INSERT INTO graph_memory_nodes (graph_node_id, owner_id, owner_type, memory_type, content, fact_summary, vector, lifecycle_status, retrieval_weight, source_refs, entity_ids, evidence_time_start, evidence_time_end, evidence_time_confidence, valid_time_start, valid_time_end, valid_time_confidence, refreshed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(graph_node_id) DO UPDATE SET
-         owner_id=excluded.owner_id,
-         owner_type=excluded.owner_type,
-         memory_type=excluded.memory_type,
-         content=excluded.content,
-         fact_summary=excluded.fact_summary,
-         vector=excluded.vector,
-         lifecycle_status=excluded.lifecycle_status,
-         retrieval_weight=excluded.retrieval_weight,
-         source_refs=excluded.source_refs,
-         entity_ids=excluded.entity_ids,
-         evidence_time_start=excluded.evidence_time_start,
-         evidence_time_end=excluded.evidence_time_end,
-         evidence_time_confidence=excluded.evidence_time_confidence,
-         valid_time_start=excluded.valid_time_start,
-         valid_time_end=excluded.valid_time_end,
-         valid_time_confidence=excluded.valid_time_confidence,
-         refreshed_at=excluded.refreshed_at`,
-      [
-        normalizedNode.graphNodeId,
-        normalizedNode.ownerId,
-        normalizedNode.ownerType,
-        normalizedNode.memoryType ?? null,
-        normalizedNode.content,
-        normalizedNode.factSummary ?? null,
-        JSON.stringify(normalizedNode.vector),
-        normalizedNode.lifecycleStatus,
-        normalizedNode.retrievalWeight,
-        JSON.stringify(normalizedNode.sourceRefs),
-        JSON.stringify(normalizedNode.entityIds),
-        normalizedNode.evidenceTimeStart ?? null,
-        normalizedNode.evidenceTimeEnd ?? null,
-        normalizedNode.evidenceTimeConfidence ?? "low",
-        normalizedNode.validTimeStart ?? null,
-        normalizedNode.validTimeEnd ?? null,
-        normalizedNode.validTimeConfidence ?? "low",
-        normalizedNode.refreshedAt
-      ]
-    );
-  }
-
-  override async deleteGraphMemoryNode(ownerType: GraphMemoryOwnerType, ownerId: string) {
-    await super.deleteGraphMemoryNode(ownerType, ownerId);
-    this.exec(`DELETE FROM graph_memory_nodes WHERE owner_type = ? AND owner_id = ?`, [ownerType, ownerId]);
-  }
-
   override getShortTermMemory(memoryDataId: string): ShortTermMemory | undefined {
     const cached = super.getShortTermMemory(memoryDataId);
     if (cached) return cached;
@@ -8017,8 +7872,52 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     return row ? normalizeGraphMemoryNodeRow(normalizeRow(row)) : undefined;
   }
 
+  // 冷缓存（loadCache:false 或 clearLoadedCache 后）且图存储为内存实现时，
+  // SQL 直查表兜底；注入 Neo4j 等外部图存储时始终委托基类（由图存储自己检索）。
+  private get graphCacheWarm() {
+    return !(this.graphStore instanceof InMemoryGraphMemoryStore) || this.graphMemoryNodes.length > 0;
+  }
+
+  override searchGraphText(queryTokens: string[], options: GraphMemorySearchOptions = {}): GraphMemorySearchHit[] {
+    if (this.graphCacheWarm) return super.searchGraphText(queryTokens, options);
+    const normalizedTokens = [...new Set(queryTokens.map((token) => token.normalize("NFKC").toLowerCase().trim()).filter(Boolean))];
+    if (!normalizedTokens.length) return [];
+    const query = normalizedTokens
+      .map((token) => `"${token.replaceAll('"', '""')}"`)
+      .join(" OR ");
+    if (!query.trim()) return [];
+    return this.db
+      .prepare(
+        `SELECT context_text_index_fts.owner_type AS ownerType, context_text_index_fts.owner_id AS ownerId, -bm25(context_text_index_fts) AS score
+         FROM context_text_index_fts
+         JOIN graph_memory_nodes graph
+           ON graph.owner_type = context_text_index_fts.owner_type
+          AND graph.owner_id = context_text_index_fts.owner_id
+         LEFT JOIN short_term_memories stm
+           ON context_text_index_fts.owner_type = 'stm'
+          AND stm.memory_data_id = context_text_index_fts.owner_id
+         LEFT JOIN long_term_memories ltm
+           ON context_text_index_fts.owner_type = 'ltm'
+          AND ltm.memory_id = context_text_index_fts.owner_id
+         WHERE context_text_index_fts MATCH ?
+           AND (
+             (context_text_index_fts.owner_type = 'stm' AND stm.memory_data_id IS NOT NULL) OR
+             (context_text_index_fts.owner_type = 'ltm' AND ltm.memory_id IS NOT NULL)
+           )
+         ORDER BY score DESC, context_text_index_fts.owner_type, context_text_index_fts.owner_id`
+      )
+      .all(query)
+      .map((row) => normalizeRow(row) as { ownerType: GraphMemoryOwnerType; ownerId: string; score: number })
+      .filter((row) => graphSearchOptionsMatch(row.ownerType, row.ownerId, options))
+      .map((row) => ({
+        ownerType: row.ownerType,
+        ownerId: row.ownerId,
+        score: Number(row.score ?? 0)
+      }));
+  }
+
   override listGraphMemoryNodes(query: GraphMemoryNodePageQuery): MaybePromise<GraphMemoryNodePage> {
-    if (this.graphStore) return this.graphStore.listGraphMemoryNodes(query);
+    if (this.graphCacheWarm) return super.listGraphMemoryNodes(query);
     const ownerTypePlaceholders = sqlPlaceholders(query.ownerTypes.length);
     const afterClause = query.after
       ? `AND (owner_type > ? OR (owner_type = ? AND owner_id > ?))`
@@ -8064,7 +7963,7 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
   }
 
   override listGraphRelationEdges(query: GraphRelationEdgePageQuery): MaybePromise<GraphRelationEdgePage> {
-    if (this.graphStore) return this.graphStore.listGraphRelationEdges(query);
+    if (this.graphCacheWarm) return super.listGraphRelationEdges(query);
     const ownerTypePlaceholders = sqlPlaceholders(query.ownerTypes.length);
     const relationTypePlaceholders = sqlPlaceholders(query.relationTypes.length);
     const afterClause = query.after ? `AND rel.edge_id > ?` : "";
@@ -8299,10 +8198,9 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     if (!query.trim()) return [];
     return this.db
       .prepare(
-        `SELECT owner_type AS ownerType, owner_id AS ownerId, SUM(term_frequency) AS score, COUNT(DISTINCT term) AS matchedTerms
+        `SELECT owner_type AS ownerType, owner_id AS ownerId, -bm25(context_text_index_fts) AS score, 1 AS matchedTerms
          FROM context_text_index_fts
          WHERE context_text_index_fts MATCH ?
-         GROUP BY owner_type, owner_id
          ORDER BY score DESC, owner_type, owner_id`
       )
       .all(query)
@@ -8315,8 +8213,12 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       }));
   }
 
+  // ponytail: 实例级缓存，写入新增索引后 corpus 会滞后到下次重启；评测/检索主场景为只读，可接受
+  private keywordCorpusCache: string[] | undefined;
+
   override listKeywordCorpusContents(): string[] {
-    return this.db
+    if (this.keywordCorpusCache) return this.keywordCorpusCache;
+    this.keywordCorpusCache = this.db
       .prepare(`
         SELECT content
         FROM context_index_entries
@@ -8326,43 +8228,7 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       .all()
       .map((row) => String(normalizeRow(row as Record<string, unknown>).content ?? ""))
       .filter(Boolean);
-  }
-
-  override searchGraphText(queryTokens: string[], options: GraphMemorySearchOptions = {}): GraphMemorySearchHit[] {
-    const normalizedTokens = [...new Set(queryTokens.map((token) => token.normalize("NFKC").toLowerCase().trim()).filter(Boolean))];
-    if (!normalizedTokens.length) return [];
-    const query = normalizedTokens
-      .map((token) => `"${token.replaceAll('"', '""')}"`)
-      .join(" OR ");
-    if (!query.trim()) return [];
-    return this.db
-      .prepare(
-        `SELECT context_text_index_fts.owner_type AS ownerType, context_text_index_fts.owner_id AS ownerId, -bm25(context_text_index_fts) AS score
-         FROM context_text_index_fts
-         JOIN graph_memory_nodes graph
-           ON graph.owner_type = context_text_index_fts.owner_type
-          AND graph.owner_id = context_text_index_fts.owner_id
-         LEFT JOIN short_term_memories stm
-           ON context_text_index_fts.owner_type = 'stm'
-          AND stm.memory_data_id = context_text_index_fts.owner_id
-         LEFT JOIN long_term_memories ltm
-           ON context_text_index_fts.owner_type = 'ltm'
-          AND ltm.memory_id = context_text_index_fts.owner_id
-         WHERE context_text_index_fts MATCH ?
-           AND (
-             (context_text_index_fts.owner_type = 'stm' AND stm.memory_data_id IS NOT NULL) OR
-             (context_text_index_fts.owner_type = 'ltm' AND ltm.memory_id IS NOT NULL)
-           )
-         ORDER BY score DESC, context_text_index_fts.owner_type, context_text_index_fts.owner_id`
-      )
-      .all(query)
-      .map((row) => normalizeRow(row) as { ownerType: GraphMemoryOwnerType; ownerId: string; score: number })
-      .filter((row) => matchesGraphSearchOptions(row.ownerType, row.ownerId, options))
-      .map((row) => ({
-        ownerType: row.ownerType,
-        ownerId: row.ownerId,
-        score: Number(row.score ?? 0)
-      }));
+    return this.keywordCorpusCache;
   }
 
   override searchFactText(queryTokens: string[], options: FactIndexSearchQuery = {}): FactIndexSearchHit[] {
@@ -8395,36 +8261,6 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       .map((row) => ({ factId: row.factId, score: Number(row.score ?? 0) }));
   }
 
-  override searchFactVector(queryVector: number[], options: FactIndexSearchQuery = {}): FactIndexSearchHit[] {
-    if (!queryVector.length) return [];
-    const rows = this.db.prepare(`
-      SELECT v.owner_id AS factId, v.vector AS vector
-      FROM context_vector_index_entries v
-      JOIN fact_items fact ON fact.fact_id = v.owner_id
-      WHERE v.owner_type = 'fact'
-        AND (? IS NULL OR fact.tenant_id = ?)
-        AND (? IS NULL OR fact.principal_id = ?)
-        AND (? IS NULL OR fact.context_scope_id = ?)
-        AND (? = 1 OR fact.status IN ('active', 'conflicted'))
-    `).all(
-      options.tenantId ?? null,
-      options.tenantId ?? null,
-      options.principalId ?? null,
-      options.principalId ?? null,
-      options.contextScopeId ?? null,
-      options.contextScopeId ?? null,
-      options.includeInactive ? 1 : 0
-    );
-    return rows.flatMap((raw) => {
-      const row = normalizeRow(raw as Record<string, unknown>);
-      const factId = String(row.factId ?? "");
-      const vector = parseJsonArray(row.vector).map(Number);
-      return [{ factId, score: cosine(queryVector, vector) }];
-    }).filter((hit) => hit.score > 0)
-      .sort((left, right) => right.score - left.score || left.factId.localeCompare(right.factId))
-      .slice(0, options.limit ?? 100);
-  }
-
   override async deleteTextIndexEntry(indexId: string) {
     await super.deleteTextIndexEntry(indexId);
     this.exec(`DELETE FROM context_text_index_fts WHERE index_id = ?`, [indexId]);
@@ -8435,15 +8271,9 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     this.exec(`DELETE FROM context_index_entries WHERE index_id = ?`, [indexId]);
   }
 
-  override async deleteVectorIndexEntry(indexId: string) {
-    await super.deleteVectorIndexEntry(indexId);
-    this.exec(`DELETE FROM context_vector_index_entries WHERE index_id = ?`, [indexId]);
-  }
-
   override async deleteIndexBundle(ownerType: "fact" | "stm" | "ltm", ownerId: string) {
     await super.deleteIndexBundle(ownerType, ownerId);
     this.exec(`DELETE FROM context_index_entries WHERE owner_id = ? AND owner_type = ?`, [ownerId, ownerType]);
-    this.exec(`DELETE FROM context_vector_index_entries WHERE owner_id = ? AND owner_type = ?`, [ownerId, ownerType]);
     this.exec(`DELETE FROM context_text_index_fts WHERE owner_id = ? AND owner_type = ?`, [ownerId, ownerType]);
   }
 
@@ -8873,20 +8703,6 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       } as LongTermMemory;
     }));
 
-    appendAll(this.relationEdges, this.queryAll<RelationEdge>(`
-      SELECT
-        edge_id AS edgeId,
-        from_id AS fromId,
-        to_id AS toId,
-        relation_type AS relationType,
-        evidence,
-        strength,
-        confidence,
-        source,
-        created_at AS createdAt
-      FROM relation_edges
-    `));
-
     appendAll(this.packTraces, this.queryAll<ContextPackTrace>(`
       SELECT trace_id AS traceId, pack_id AS packId, final_score AS finalScore,
              token_budget AS tokenBudget, temporal_trace AS temporal
@@ -9106,51 +8922,6 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       SELECT index_id AS indexId, owner_id AS ownerId, owner_type AS ownerType, '' AS content, lifecycle_status AS lifecycleStatus, refreshed_at AS refreshedAt, token_count AS tokenCount
       FROM context_index_entries
     `));
-
-    appendAll(this.vectorIndexEntries, this.queryAll<ContextVectorIndexEntry>(`
-      SELECT
-        index_id AS indexId,
-        owner_id AS ownerId,
-        owner_type AS ownerType,
-        '' AS content,
-        '[]' AS vector,
-        lifecycle_status AS lifecycleStatus,
-        refreshed_at AS refreshedAt
-      FROM context_vector_index_entries
-    `).map((item) => ({ ...item, vector: typeof item.vector === "string" ? JSON.parse(item.vector) : item.vector } as ContextVectorIndexEntry)));
-
-    appendAll(this.graphMemoryNodes, this.queryAll<GraphMemoryNode>(`
-      SELECT
-        graph_node_id AS graphNodeId,
-        owner_id AS ownerId,
-        owner_type AS ownerType,
-        memory_type AS memoryType,
-        content,
-        fact_summary AS factSummary,
-        vector,
-        lifecycle_status AS lifecycleStatus,
-        retrieval_weight AS retrievalWeight,
-        source_refs AS sourceRefs,
-        entity_ids AS entityIds,
-        evidence_time_start AS evidenceTimeStart,
-        evidence_time_end AS evidenceTimeEnd,
-        evidence_time_confidence AS evidenceTimeConfidence,
-        valid_time_start AS validTimeStart,
-        valid_time_end AS validTimeEnd,
-        valid_time_confidence AS validTimeConfidence,
-        refreshed_at AS refreshedAt
-      FROM graph_memory_nodes
-    `).map((item) => {
-      const { factSummary, ...nodeWithoutFactSummary } = item;
-      const normalizedFactSummary = normalizeFactSummary(factSummary);
-      return {
-        ...nodeWithoutFactSummary,
-        ...(normalizedFactSummary ? { factSummary: normalizedFactSummary } : {}),
-        vector: typeof item.vector === "string" ? JSON.parse(item.vector) : item.vector,
-        sourceRefs: typeof item.sourceRefs === "string" ? JSON.parse(item.sourceRefs) : item.sourceRefs,
-        entityIds: typeof item.entityIds === "string" ? JSON.parse(item.entityIds) : item.entityIds
-      } as GraphMemoryNode;
-    }));
 
     appendAll(this.changeEvents, this.queryAll<MemoryChangeEvent>(`
       SELECT
@@ -9466,7 +9237,7 @@ function groupBy<T, K>(items: T[], keyForItem: (item: T) => K): Map<K, T[]> {
   return groups;
 }
 
-function expandSearchTokens(tokens: string[]) {
+export function expandSearchTokens(tokens: string[]) {
   const expanded: string[] = [];
   for (const token of tokens) {
     if (/^[\u3400-\u9fff]+$/u.test(token)) {
@@ -9490,7 +9261,7 @@ function buildFactIndexContent(fact: FactItem) {
   return `${fact.factText}\n${fact.normalizedClaim}\n${fact.sourceClaim ?? ""}`.normalize("NFKC").toLowerCase();
 }
 
-function matchesGraphSearchOptions(
+function graphSearchOptionsMatch(
   ownerType: GraphMemoryOwnerType,
   ownerId: string,
   options: GraphMemorySearchOptions
@@ -9500,7 +9271,7 @@ function matchesGraphSearchOptions(
   return true;
 }
 
-function graphMemoryNodeIsAfter(
+export function graphMemoryNodeIsAfter(
   node: GraphMemoryNode,
   after: NonNullable<GraphMemoryNodePageQuery["after"]>
 ) {
@@ -9508,11 +9279,11 @@ function graphMemoryNodeIsAfter(
     (node.ownerType === after.layer && node.ownerId > after.id);
 }
 
-function compareGraphMemoryNodes(left: GraphMemoryNode, right: GraphMemoryNode) {
+export function compareGraphMemoryNodes(left: GraphMemoryNode, right: GraphMemoryNode) {
   return compareText(left.ownerType, right.ownerType) || compareText(left.ownerId, right.ownerId);
 }
 
-function compareText(left: string, right: string) {
+export function compareText(left: string, right: string) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
@@ -9536,7 +9307,7 @@ function latestConversationEvidenceMessages(messages: readonly ConversationMessa
   );
 }
 
-function cloneGraphMemoryNode(node: GraphMemoryNode): GraphMemoryNode {
+export function cloneGraphMemoryNode(node: GraphMemoryNode): GraphMemoryNode {
   return {
     ...node,
     vector: [...node.vector],
@@ -9545,7 +9316,7 @@ function cloneGraphMemoryNode(node: GraphMemoryNode): GraphMemoryNode {
   };
 }
 
-function cloneRelationEdge(edge: RelationEdge): RelationEdge {
+export function cloneRelationEdge(edge: RelationEdge): RelationEdge {
   return { ...edge };
 }
 
@@ -9567,7 +9338,7 @@ function isJsonValue(value: unknown): boolean {
   return false;
 }
 
-function cosine(left: number[], right: number[]) {
+export function cosine(left: number[], right: number[]) {
   if (!left.length || !right.length) return 0;
   const length = Math.min(left.length, right.length);
   let dot = 0;
@@ -10420,7 +10191,7 @@ function normalizeLongTermMemoryRow(row: Record<string, unknown>): LongTermMemor
   };
 }
 
-function normalizeGraphMemoryNodeRow(row: Record<string, unknown>): GraphMemoryNode {
+export function normalizeGraphMemoryNodeRow(row: Record<string, unknown>): GraphMemoryNode {
   const item = row as Partial<GraphMemoryNode>;
   const normalizedFactSummary = normalizeFactSummary(item.factSummary);
   return {
@@ -10440,7 +10211,7 @@ function normalizeGraphMemoryNodeRow(row: Record<string, unknown>): GraphMemoryN
   };
 }
 
-function normalizeRelationEdgeRow(row: Record<string, unknown>): RelationEdge {
+export function normalizeRelationEdgeRow(row: Record<string, unknown>): RelationEdge {
   const item = row as Partial<RelationEdge>;
   return {
     edgeId: String(item.edgeId ?? ""),
