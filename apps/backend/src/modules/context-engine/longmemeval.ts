@@ -3399,7 +3399,7 @@ function createAsyncConcurrencyLimiter(concurrency: number): AsyncConcurrencyLim
   };
 }
 
-async function buildLongMemEvalAnswerContext(
+export async function buildLongMemEvalAnswerContext(
   repository: ContextEngineRepository,
   context: SampleContext,
   mode: LongMemEvalAnswerContextMode | undefined,
@@ -4096,9 +4096,11 @@ function renderLongMemEvalAnswerEvidenceItem(
   itemIndexByIdentity?: Map<string, number>
 ) {
   const sourceRefs = uniqueStrings(candidate.item.sourceRefs.map((source) => `${source.sourceType}:${source.sourceId}`));
-  const relations = uniqueStrings(candidate.relations.map((edge) =>
-    renderLongMemEvalAnswerRelation(candidate, edge, itemIndexByIdentity)
-  ));
+  // same_source（来源 Session 字段已表达）与 supports（无增量信息）只产生 id 灌水挤占证据预算；
+  // 仅保留带语义的关系（更新/冲突/同一事实/派生）
+  const relations = uniqueStrings(candidate.relations
+    .filter((edge) => edge.relationType !== "same_source" && edge.relationType !== "supports")
+    .map((edge) => renderLongMemEvalAnswerRelation(candidate, edge, itemIndexByIdentity)));
   const sequencedFacts = candidate.facts
     .filter((fact) => fact.factSequence !== undefined)
     .map((fact) => {

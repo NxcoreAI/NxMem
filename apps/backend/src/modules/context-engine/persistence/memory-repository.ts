@@ -4518,6 +4518,27 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     }
   }
 
+  override async hasCompletedMemoryEvents(eventIds: string[]): Promise<Record<string, boolean>> {
+    const result: Record<string, boolean> = {};
+    if (!eventIds.length) return result;
+    const wanted = [...new Set(eventIds)];
+    const succeeded = new Set<string>();
+    for (const batch of chunkSqlValues(wanted)) {
+      const placeholders = sqlPlaceholders(batch.length);
+      for (const row of this.db.prepare(`
+        SELECT t.event_id AS eventId
+        FROM context_pipeline_tasks t
+        JOIN memory_events e ON e.event_id = t.event_id
+        WHERE t.event_id IN (${placeholders}) AND t.status = 'succeeded'
+      `).all(...batch) as Array<{ eventId?: unknown }>) {
+        const eventId = row.eventId;
+        if (typeof eventId === "string") succeeded.add(eventId);
+      }
+    }
+    for (const eventId of wanted) result[eventId] = succeeded.has(eventId);
+    return result;
+  }
+
   override async hasMemoryEvent(eventId: string) {
     const row = this.db
       .prepare(`SELECT 1 AS present FROM memory_events WHERE event_id = ? LIMIT 1`)

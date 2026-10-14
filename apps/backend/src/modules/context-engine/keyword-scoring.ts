@@ -44,8 +44,6 @@ export function buildKeywordCorpusStats(contents: string[], queryTokens: string[
       if (tokens.has(token)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
     }
     if (!hanTokens.size) continue;
-    // 中文 token 的 hasExactToken 走子串；corpus 缓存只覆盖分词集合，这里保留原文匹配
-    // （LongMemEval 语料以英文为主，中文语料回退原实现成本）
   }
   if (hanTokens.size) {
     for (const content of contents) {

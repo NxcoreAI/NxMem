@@ -404,7 +404,11 @@ function temporalConversionNote(temporal?: { range?: { startTime: string; endTim
 
 function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, indexes?: Map<string, number>) {
   const refs = unique(candidate.item.sourceRefs.map((source) => `${source.sourceType}:${source.sourceId}`));
-  const relations = unique(candidate.relations.map((edge) => renderRelation(candidate, edge, indexes)));
+  // same_source（来源 Session 字段已表达）与 supports（无增量信息）只产生 id 灌水挤占证据预算；
+  // 仅保留带语义的关系（更新/冲突/同一事实/派生）
+  const relations = unique(candidate.relations
+    .filter((edge) => edge.relationType !== "same_source" && edge.relationType !== "supports")
+    .map((edge) => renderRelation(candidate, edge, indexes)));
   const sequences = candidate.facts.filter((fact) => fact.factSequence !== undefined).map((fact) => `  - Session ${fact.sessionId ?? candidate.sourceSessionIds[0] ?? "未知"}, factSequence ${fact.factSequence}: ${fact.factText || fact.normalizedClaim}`);
   return [`- [${index}] item:${candidate.item.id}`, candidate.evidenceText, ...(sequences.length ? ["  事实抽取顺序：", ...sequences] : []), `  事实发生时间：${formatValidTime(candidate.temporal)}`, ...(candidate.temporal.events?.length ? [`  事件时间映射：${candidate.temporal.events.map((event) => `${event.eventKey} | ${event.label} | ${event.validTime}`).join("；")}`] : []), `  消息发送时间：${candidate.temporal.evidenceTime ?? "未提供"}`, `  来源角色：${candidate.sourceRoles.join(", ") || "unknown"}`, `  来源 Session：${candidate.sourceSessionIds.join(", ") || "未知"}`, `  来源引用：${refs.join(", ") || "无"}`, `  关系：${relations.join("；") || "无"}`].join("\n");
 }
