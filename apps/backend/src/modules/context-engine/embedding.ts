@@ -1,7 +1,7 @@
 import { getContextEngineConfig, type ContextEngineConfig } from "../../config.js";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { postOpenAiCompatibleJson } from "./llm-request.js";
 
 export interface EmbeddingVectorResult {
@@ -27,52 +27,100 @@ const requestLimiters = new Map<string, AsyncLimiter>();
 // 远程 embedding API 同文本重复调用有 ~1e-3 浮点漂移（GPU 非确定），会顺着 vector 分
 // 抖动检索排序。设 CONTEXT_ENGINE_EMBEDDING_CACHE_DIR 后同 (fingerprint, text) 永远复用
 // 首次结果（进程内 + 磁盘），保证评测可复现。
-const embeddingCache = new Map<string, number[]>();
-let embeddingCacheLoaded = false;
+// ponytail: 缓存按 key 前缀分 256 桶文件，写时只重写脏桶；曾经的单文件实现每次
+// miss 都全量重写 512MB JSON，评测时把事件循环卡成 ~1 题/分钟。桶上限 256 个小文件，
+// 单桶膨胀到影响写延迟时再换 sqlite。
+const embeddingBuckets = new Map<string, Map<string, number[]>>();
+const embeddingDirtyBuckets = new Set<string>();
+let embeddingLegacyLoaded = false;
 
-function embeddingCacheKey(fingerprint: string, input: string) {
-  return createHash("sha256").update(`${fingerprint}\n${input}`).digest("hex");
+function embeddingCacheDir() {
+  return process.env.CONTEXT_ENGINE_EMBEDDING_CACHE_DIR;
 }
 
-function embeddingCacheFile() {
-  const dir = process.env.CONTEXT_ENGINE_EMBEDDING_CACHE_DIR;
-  return dir ? join(dir, "embedding-cache.json") : undefined;
+function bucketOf(key: string) {
+  return key.slice(0, 2);
+}
+
+function bucketFile(dir: string, bucket: string) {
+  return join(dir, `embedding-cache-${bucket}.json`);
+}
+
+function readEntries(file: string): Array<[string, number[]]> {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, number[]>;
+    return Object.entries(parsed).filter(([, v]) => Array.isArray(v));
+  } catch {
+    return [];
+  }
+}
+
+function loadLegacyCacheOnce() {
+  if (embeddingLegacyLoaded) return;
+  embeddingLegacyLoaded = true;
+  const dir = embeddingCacheDir();
+  if (!dir) return;
+  const legacy = join(dir, "embedding-cache.json");
+  if (!existsSync(legacy)) return;
+  for (const [key, value] of readEntries(legacy)) {
+    const bucket = bucketOf(key);
+    let map = embeddingBuckets.get(bucket);
+    if (!map) embeddingBuckets.set(bucket, (map = new Map()));
+    if (!map.has(key)) map.set(key, value);
+  }
+  try {
+    renameSync(legacy, `${legacy}.migrated`);
+  } catch {
+    // ponytail: 迁移 rename 失败不致命，只是下次重启再迁一次
+  }
+  for (const bucket of embeddingBuckets.keys()) embeddingDirtyBuckets.add(bucket);
+}
+
+function bucketMap(bucket: string): Map<string, number[]> {
+  loadLegacyCacheOnce();
+  let map = embeddingBuckets.get(bucket);
+  if (map) return map;
+  map = new Map();
+  embeddingBuckets.set(bucket, map);
+  const dir = embeddingCacheDir();
+  if (dir) {
+    for (const [key, value] of readEntries(bucketFile(dir, bucket))) map.set(key, value);
+  }
+  return map;
+}
+
+function saveDirtyEmbeddingBuckets() {
+  const dir = embeddingCacheDir();
+  if (!dir || !embeddingDirtyBuckets.size) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const bucket of embeddingDirtyBuckets) {
+      const map = embeddingBuckets.get(bucket);
+      if (!map?.size) continue;
+      writeFileSync(bucketFile(dir, bucket), JSON.stringify(Object.fromEntries(map)));
+    }
+    embeddingDirtyBuckets.clear();
+  } catch {
+    // ponytail: 缓存写失败不阻断检索
+  }
 }
 
 // 供 cross-encoder-reranker 等其他非确定远程调用共用同一份磁盘缓存。
 export function readRemoteScoreCache(key: string): number[] | undefined {
-  loadEmbeddingCache();
-  return embeddingCache.get(key);
+  return bucketMap(bucketOf(key)).get(key);
 }
 
 export function writeRemoteScoreCache(entries: Array<[string, number[]]>) {
-  if (!entries.length || !embeddingCacheFile()) return;
-  loadEmbeddingCache();
-  for (const [key, value] of entries) embeddingCache.set(key, value);
-  saveEmbeddingCache();
+  if (!entries.length || !embeddingCacheDir()) return;
+  for (const [key, value] of entries) {
+    bucketMap(bucketOf(key)).set(key, value);
+    embeddingDirtyBuckets.add(bucketOf(key));
+  }
+  saveDirtyEmbeddingBuckets();
 }
 
-function loadEmbeddingCache() {
-  const file = embeddingCacheFile();
-  if (!file || embeddingCacheLoaded) return;
-  embeddingCacheLoaded = true;
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, number[]>;
-    for (const [key, value] of Object.entries(parsed)) embeddingCache.set(key, value);
-  } catch {
-    // ponytail: 损坏缓存当空处理
-  }
-}
-
-function saveEmbeddingCache() {
-  const file = embeddingCacheFile();
-  if (!file) return;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(Object.fromEntries(embeddingCache)));
-  } catch {
-    // ponytail: 缓存写失败不阻断检索
-  }
+function embeddingCacheKey(fingerprint: string, input: string) {
+  return createHash("sha256").update(`${fingerprint}\n${input}`).digest("hex");
 }
 
 export function createEmbeddingClient(config: EmbeddingConfig = getContextEngineConfig().embedding): EmbeddingClient {
@@ -87,20 +135,23 @@ export function createEmbeddingClient(config: EmbeddingConfig = getContextEngine
     dimensions: config.dimensions,
     fingerprint,
     async embed(inputs, options = {}) {
-      loadEmbeddingCache();
       const normalizedInputs = normalizeEmbeddingInputs(inputs);
       const keyOf = (input: string) => embeddingCacheKey(fingerprint, input);
-      const misses = [...new Set(normalizedInputs.filter((input) => !embeddingCache.has(keyOf(input))))];
+      const misses = [...new Set(normalizedInputs.filter((input) => !bucketMap(bucketOf(keyOf(input))).has(keyOf(input))))];
       if (misses.length) {
         const batches = chunk(misses, config.batchSize);
         const fetched = (await Promise.all(batches.map((batch) => limiter.run(() =>
           requestRemoteEmbeddingBatch(batch, endpoint, config, options)
         )))).flat();
-        for (const result of fetched) embeddingCache.set(keyOf(result.input), result.embedding);
-        saveEmbeddingCache();
+        for (const result of fetched) {
+          const key = keyOf(result.input);
+          bucketMap(bucketOf(key)).set(key, result.embedding);
+          embeddingDirtyBuckets.add(bucketOf(key));
+        }
+        saveDirtyEmbeddingBuckets();
       }
       return normalizedInputs.map((input) => {
-        const embedding = embeddingCache.get(keyOf(input));
+        const embedding = bucketMap(bucketOf(keyOf(input))).get(keyOf(input));
         if (!embedding) throw new Error(`Embedding returned no vector for: ${input.slice(0, 80)}`);
         return { input, embedding, source: "remote" as const };
       });

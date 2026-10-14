@@ -156,7 +156,7 @@ export interface LongMemEvalMultiModelOptions extends Omit<LongMemEvalOptions, "
 const longMemEvalStoreSchemaVersion = "longmemeval-store-v20260811-query-scoped-stm";
 const longMemEvalLogPreviewCharLimit = 500;
 const longMemEvalDiagnosticPreviewCharLimit = 1000;
-const longMemEvalAnswerContextConcurrency = 4;
+const longMemEvalAnswerContextConcurrency = Math.max(1, Number.parseInt(process.env.LONGMEMEVAL_ANSWER_CONTEXT_CONCURRENCY ?? "", 10) || 4);
 const longMemEvalContextRetryAttempts = 3;
 export const longMemEvalAnswerCandidateLimit = 100;
 const longMemEvalRetrievalCompatibilityLimit = 10;

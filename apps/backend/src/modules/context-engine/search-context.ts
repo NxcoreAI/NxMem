@@ -1199,7 +1199,6 @@ function mergeByRrf(...rankedLists: Array<Array<{ ownerType: "stm" | "ltm"; owne
   return [...combined.values()].sort((left, right) => right.rrfScore - left.rrfScore);
 }
 
-const graphNeighborSeedLimit = 20;
 const graphNeighborResultLimit = 100;
 const graphNeighborFrontierLimit = 50;
 const graphNeighborHopDecay = 0.5;
