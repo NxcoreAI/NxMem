@@ -1199,6 +1199,58 @@ function mergeByRrf(...rankedLists: Array<Array<{ ownerType: "stm" | "ltm"; owne
   return [...combined.values()].sort((left, right) => right.rrfScore - left.rrfScore);
 }
 
+const graphNeighborResultLimit = 100;
+const graphNeighborFrontierLimit = 50;
+const graphNeighborHopDecay = 0.5;
+
+type GraphNeighborOwner = { ownerType: "stm" | "ltm"; ownerId: string; score: number };
+
+async function expandGraphNeighbors(
+  repository: ContextEngineRepository,
+  seeds: RankedOwner[],
+  exclude: Set<string>,
+  hops: number
+): Promise<GraphNeighborOwner[]> {
+  const best = new Map<string, GraphNeighborOwner>();
+  const enqueued = new Set(exclude);
+  for (const seed of seeds) enqueued.add(`${seed.ownerType}:${seed.ownerId}`);
+  let frontier: GraphNeighborOwner[] = seeds.map((seed) => ({
+    ownerType: seed.ownerType,
+    ownerId: seed.ownerId,
+    score: seed.rrfScore
+  }));
+  for (let hop = 1; hop <= hops; hop += 1) {
+    if (!frontier.length) break;
+    const edgeLists = await mapWithConcurrency(frontier, searchMaterializationConcurrency, (owner) =>
+      Promise.resolve(repository.getGraphRelationEdges(owner.ownerId))
+    );
+    const nextFrontier: GraphNeighborOwner[] = [];
+    for (const [index, owner] of frontier.entries()) {
+      for (const edge of edgeLists[index] ?? []) {
+        const neighborId = edge.fromId === owner.ownerId ? edge.toId : edge.fromId;
+        const neighborType = memoryOwnerTypeForId(neighborId);
+        // fact 不进邻居扩展：fact 走自身召回通道，此处只会把 fact id 当记忆物化
+        if (neighborType !== "stm" && neighborType !== "ltm") continue;
+        const key = `${neighborType}:${neighborId}`;
+        const score = owner.score * (edge.strength ?? 1) * Math.pow(graphNeighborHopDecay, hop - 1);
+        const existing = best.get(key);
+        if (!existing || score > existing.score) {
+          best.set(key, { ownerType: neighborType, ownerId: neighborId, score });
+        }
+        if (hop < hops && !enqueued.has(key)) {
+          enqueued.add(key);
+          nextFrontier.push({ ownerType: neighborType, ownerId: neighborId, score });
+        }
+      }
+    }
+    frontier = nextFrontier.slice(0, graphNeighborFrontierLimit);
+  }
+  return [...best.values()]
+    .filter((item) => !exclude.has(`${item.ownerType}:${item.ownerId}`))
+    .sort((left, right) => right.score - left.score || left.ownerId.localeCompare(right.ownerId))
+    .slice(0, graphNeighborResultLimit);
+}
+
 function vectorScore(vector: number[] | undefined, queryVector: number[]) {
   if (!vector || !queryVector.length) return 0;
   return cosine(queryVector, vector);
