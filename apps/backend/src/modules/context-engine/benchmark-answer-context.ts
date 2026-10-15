@@ -9,11 +9,6 @@ import {
   type ContextSearchResult,
   type ScoreBreakdown
 } from "./search-context.js";
-import {
-  collectStandingAffectiveStmMemories,
-  standingShortTermSearchResult,
-  STANDING_AFFECTIVE_REASON
-} from "./standing-affective.js";
 import { estimateContextTokens } from "./token-estimator.js";
 
 export const BENCHMARK_ANSWER_CANDIDATE_LIMIT = 100;
@@ -26,11 +21,7 @@ export type BenchmarkAnswerSourceRole = "user" | "assistant" | "tool" | "unknown
 export type BenchmarkAnswerEvidenceRole =
   | "direct_answer" | "temporal_start" | "temporal_end" | "old_state" | "new_state"
   | "calculation_operand" | "disambiguation";
-export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority" | "fact_quota" | "fact_below_threshold";
-
-// fact 的 rerank 分数双峰分布：相关 fact ~0.95+，噪声 fact ~0.02 以下。
-// 低于此门槛的 fact 一律不进 pack，防止低质 fact 挤占记忆证据席位。
-export const FACT_RERANK_THRESHOLD = 0.25;
+export type BenchmarkAnswerRejectReason = "not_relevant" | "duplicate" | "budget" | "missing_required_metadata" | "lower_priority";
 
 export interface BenchmarkAnswerContextInput {
   questionId: string;
@@ -40,8 +31,6 @@ export interface BenchmarkAnswerContextInput {
   principalId: string;
   contextScopeId: string;
   referenceTime?: string;
-  /** 时区（IANA 名），传给 temporal 解析；换算行日期也按它格式化。 */
-  timezone?: string;
   /** Optional unnormalized timestamp used only when rendering the answer prompt. */
   displayReferenceTime?: string;
   modelRunId?: string;
@@ -56,9 +45,6 @@ export interface BenchmarkAnswerContextInput {
   memoryReranker?: CrossEncoderReranker | false;
   factReranker?: CrossEncoderReranker | false;
   resolveSessionId?: (source: SourceRef) => string | undefined;
-  /** 双脑区：注入 scope 内当前偏好/反馈类 STM 作为常驻证据，默认开启。 */
-  standingAffectiveInjection?: boolean;
-  graphNeighborRecall?: boolean;
 }
 
 export interface BenchmarkAnswerEvidenceCandidate {
@@ -66,13 +52,12 @@ export interface BenchmarkAnswerEvidenceCandidate {
   scoreBreakdown: ScoreBreakdown;
   sourceSessionIds: string[];
   sourceRoles: BenchmarkAnswerSourceRole[];
-  temporal: Pick<ContextPackItem["temporal"], "evidenceTime" | "validTime" | "validTimeStart" | "validTimeEnd" | "events">;
+  temporal: Pick<ContextPackItem["temporal"], "evidenceTime" | "validTime" | "events">;
   relations: RelationEdge[];
   facts: FactItem[];
   evidenceText: string;
   relevanceScore: number;
   estimatedTokens: number;
-  standing?: boolean;
 }
 
 export interface BenchmarkAnswerEvidenceRejection {
@@ -112,9 +97,7 @@ export async function buildBenchmarkAnswerContext(
     principalId: input.principalId,
     contextScopeId: input.contextScopeId,
     ...(input.referenceTime ? { referenceTime: input.referenceTime } : {}),
-    ...(input.timezone ? { timezone: input.timezone } : {}),
-    ...(input.includeInactive !== undefined ? { includeInactive: input.includeInactive } : {}),
-    ...(input.graphNeighborRecall ? { graphNeighborRecall: true } : {})
+    ...(input.includeInactive !== undefined ? { includeInactive: input.includeInactive } : {})
   }, {
     recordRetrieval: false,
     factRetrieval: input.factRetrieval ?? input.allowedLayers.includes("fact"),
@@ -124,31 +107,16 @@ export async function buildBenchmarkAnswerContext(
   });
   const allowed = new Set<ContextSearchResult["layer"]>(input.allowedLayers);
   const forbidden = search.results.filter((item) => !allowed.has(item.layer));
-  // fact 层单句断言与问题字面匹配天然占优，rerank 后会碾压式挤掉带完整上下文的 STM 证据；
-  // 只做兜底补充：候选池里 fact 最多占 30%，其余留给 STM。
-  const factCap = Math.floor(candidateLimit * 0.3);
-  let factCount = 0;
-  const results: typeof search.results = [];
-  for (const item of search.results
-    .filter((result) => allowed.has(result.layer))
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))) {
-    if (item.layer === "fact" && factCount >= factCap) continue;
-    if (item.layer === "fact") factCount += 1;
-    results.push(item);
-    if (results.length >= candidateLimit) break;
-  }
-  const standingMemories = input.standingAffectiveInjection === false || !allowed.has("stm")
-    ? []
-    : await collectStandingAffectiveStmMemories(repository, input, new Set(results.map((result) => result.id)));
-  const standingResults = standingMemories.map(standingShortTermSearchResult);
-  const built = await buildCandidates(repository, input, [...standingResults, ...results]);
-  const standingItemIds = new Set(standingResults.map((result) => result.id));
+  const results = search.results
+    .filter((item) => allowed.has(item.layer))
+    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+    .slice(0, candidateLimit);
+  const built = await buildCandidates(repository, input, results);
   const selection = selectBenchmarkAnswerEvidenceWithinBudget({
     question: input.question,
     questionType: input.questionType ?? "multi-session",
     ...((input.displayReferenceTime ?? input.referenceTime) ? { referenceTime: input.displayReferenceTime ?? input.referenceTime } : {}),
     candidates: built,
-    ...(standingItemIds.size ? { standingItemIds } : {}),
     tokenBudget,
     evidenceLimit
   });
@@ -216,8 +184,7 @@ async function buildCandidates(
       facts: itemFacts,
       evidenceText,
       relevanceScore: relevance(input.question, evidenceText),
-      estimatedTokens: 0,
-      ...(result.reason === STANDING_AFFECTIVE_REASON ? { standing: true } : {})
+      estimatedTokens: 0
     };
     candidate.estimatedTokens = estimateContextTokens(renderItem(candidate, 1));
     return candidate;
@@ -242,8 +209,6 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
   candidates: BenchmarkAnswerEvidenceCandidate[];
   tokenBudget: number;
   evidenceLimit?: number;
-  /** 双脑区：standing 注入的条目不参与相关度竞争，保位排在最前。 */
-  standingItemIds?: Set<string>;
 }) {
   const evidenceLimit = clamp(input.evidenceLimit, BENCHMARK_ANSWER_EVIDENCE_LIMIT, 1, 100);
   const rejected: BenchmarkAnswerEvidenceRejection[] = [];
@@ -259,35 +224,14 @@ export function selectBenchmarkAnswerEvidenceWithinBudget(input: {
     rejected.push(rejection(duplicate, "duplicate"));
     if (keepCandidate) deduped[existingIndex] = candidate;
   }
-  const standing = input.standingItemIds
-    ? deduped.filter((candidate) => input.standingItemIds!.has(candidate.item.id))
-    : [];
-  const ranked = deduped
-    .filter((candidate) => !input.standingItemIds?.has(candidate.item.id))
-    .slice().sort(compareCandidates);
+  const ranked = deduped.slice().sort(compareCandidates);
   const baseline = Math.min(baselineCandidateCount, evidenceLimit);
-  const rankedQuota = Math.max(baseline, evidenceLimit - standing.length);
-  const considered = [...standing, ...ranked.slice(0, baseline), ...ranked.slice(baseline, rankedQuota)];
+  const considered = ranked.slice(0, baseline).concat(ranked.slice(baseline, evidenceLimit));
   let usedTokens = estimateContextTokens(renderHeader(input.questionType, input.question, input.referenceTime));
   const selectedCandidates: BenchmarkAnswerEvidenceCandidate[] = [];
-  // fact 兜底席位：选择层同样限流，防止高分 fact 占满证据挤掉 STM。
-  const factQuota = Math.max(4, Math.floor(evidenceLimit / 4));
-  let factSelected = 0;
   for (const candidate of considered) {
-    if (candidate.item.layer === "fact") {
-      // 低分 fact 直接拒（噪声）；过门槛的 fact 与 STM 平等竞争席位，仅受 quota 上限约束
-      if ((candidate.scoreBreakdown.reranker ?? candidate.item.score) < FACT_RERANK_THRESHOLD) {
-        rejected.push(rejection(candidate, "fact_below_threshold"));
-        continue;
-      }
-      if (factSelected >= factQuota) {
-        rejected.push(rejection(candidate, "fact_quota"));
-        continue;
-      }
-    }
     const tokens = estimateContextTokens(renderItem(candidate, selectedCandidates.length + 1));
     if (usedTokens + tokens > input.tokenBudget) { rejected.push(rejection(candidate, "budget")); continue; }
-    if (candidate.item.layer === "fact") factSelected += 1;
     selectedCandidates.push(candidate); usedTokens += tokens;
   }
   const consideredIds = new Set([...selectedCandidates.map((item) => item.item.id), ...rejected.map((item) => item.itemId)]);
@@ -305,40 +249,12 @@ export function renderBenchmarkAnswerContext(
   referenceTime: string | undefined,
   candidates: BenchmarkAnswerEvidenceCandidate[],
   packId: string,
-  questionType = "multi-session",
-  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }
+  questionType = "multi-session"
 ) {
   const indexes = new Map<string, number>();
-  const standingCandidates = candidates.filter((candidate) => candidate.standing);
-  const ordered = orderCandidatesForQuestion(candidates.filter((candidate) => !candidate.standing), questionType, question);
-  [...ordered, ...standingCandidates].forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
-  return [
-    renderHeader(questionType, question, referenceTime, packId, temporal),
-    ...(ordered.length
-      ? ordered.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"]),
-    ...(standingCandidates.length
-      ? ["【用户偏好（情感脑区常驻记忆，未经问题相关性排序）】", ...standingCandidates.map((candidate, index) => renderItem(candidate, ordered.length + index + 1, indexes))]
-      : [])
-  ].join("\n");
-}
-
-// 多证据聚合辅助：时间题把证据按发生时间排成时间线，计算/求和题按来源会话分组——
-// 呈现顺序即推理顺序，减少答题模型跨证据拼装（排序、数数、求和）时的遗漏。
-function orderCandidatesForQuestion(candidates: BenchmarkAnswerEvidenceCandidate[], type: string, question: string) {
-  if (type === "temporal-reasoning") {
-    return candidates.slice().sort((a, b) => candidateTime(a).localeCompare(candidateTime(b)));
-  }
-  if (needsCalculation(type, question)) {
-    return candidates.slice().sort((a, b) =>
-      (a.sourceSessionIds[0] ?? "").localeCompare(b.sourceSessionIds[0] ?? "") || candidateTime(a).localeCompare(candidateTime(b)));
-  }
-  return candidates;
-}
-
-function arrangementNote(type: string, question: string) {
-  if (type === "temporal-reasoning") return "【证据排列】证据已按事实发生时间（validTime，缺省用消息时间）从早到晚排序。";
-  if (needsCalculation(type, question)) return "【证据排列】证据已按来源会话分组，同会话证据相邻，会话内按时间排序；跨会话计数/求和时逐会话核对，勿遗漏。";
-  return null;
+  candidates.forEach((candidate, index) => identityIds(candidate).forEach((id) => indexes.set(id, index + 1)));
+  return [renderHeader(questionType, question, referenceTime, packId), ...(candidates.length
+    ? candidates.map((candidate, index) => renderItem(candidate, index + 1, indexes)) : ["- 无"])].join("\n");
 }
 
 async function buildPack(
@@ -350,7 +266,7 @@ async function buildPack(
 ): Promise<ContextPack> {
   const packId = `pack_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const traceId = `trace_${packId}`;
-  const serializedPrompt = renderBenchmarkAnswerContext(input.question, input.displayReferenceTime ?? input.referenceTime, selection.selectedCandidates, packId, input.questionType, search.temporal);
+  const serializedPrompt = renderBenchmarkAnswerContext(input.question, input.displayReferenceTime ?? input.referenceTime, selection.selectedCandidates, packId, input.questionType);
   const used = estimateContextTokens(serializedPrompt);
   const taskContext = selection.selectedCandidates.map(candidateContextItem);
   const dropped: ContextPack["dropped"] = [
@@ -376,30 +292,8 @@ async function buildPack(
   return pack;
 }
 
-function renderHeader(
-  type: string,
-  question: string,
-  referenceTime?: string,
-  packId = "pending",
-  temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }
-) {
-  const note = arrangementNote(type, question);
-  const conversion = temporalConversionNote(temporal);
-  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数：同一事件在不同会话的重复陈述（同一物品+同一相对时间，如两处都说 last Thursday 烤了饼干）只算一次；问题限定原因或属性时，未注明原因的同类事件也计入；先穷举证据中所有同类候选（含不同会话提到的），逐条列出后再数，不要以『通用/非专用』为由主观排除；事件时间的相对表述（last month/last week 等）按证据发生时间换算后倾向计入问题时间窗口。"] : []), ...(note ? [note] : []), ...(conversion ? [conversion] : [])].join("\n");
-}
-
-// 相对日期换算：把问题里 "last Saturday"/"two weeks ago" 解析出的具体日期直接告诉模型，
-// 免去它对每条证据自行换算星期/日期——换算错或不敢换算就会弃答。
-function temporalConversionNote(temporal?: { range?: { startTime: string; endTime: string }; source: string; referenceTime: string; timezone?: string }) {
-  if (!temporal?.range || temporal.source === "none" || temporal.source === "explicit") return null;
-  // 日期必须按解析时的时区格式化：UTC slice 会把上海时区的单日区间显示成错位的两天。
-  const timezone = temporal.timezone ?? "UTC";
-  const dateLabel = (iso: string) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
-  const start = dateLabel(temporal.range.startTime);
-  const end = dateLabel(temporal.range.endTime);
-  const singleDay = Date.parse(temporal.range.endTime) - Date.parse(temporal.range.startTime) <= 86_400_000;
-  const reference = dateLabel(temporal.referenceTime);
-  return `【时间换算】问题中的相对时间已按问题时间 ${reference} 解析为 ${singleDay ? start : `${start} 至 ${end}`}。判断 "last Saturday"、"two weeks ago" 这类表达时，直接用证据的"事实发生时间/消息发送时间"与该日期匹配，不要自行估算。`;
+function renderHeader(type: string, question: string, referenceTime?: string, packId = "pending") {
+  return [`【Context Pack】${packId}`, `【任务】${question}`, ...(referenceTime?.trim() ? [`【问题时间】${referenceTime.trim()}`] : []), "【答题证据】", ...(needsCount(type, question) ? ["【计数规则】先枚举符合问题时间范围的独立事件，再计数；不要把支持性事实、参数或同一事件的重复提及当作额外事件。"] : [])].join("\n");
 }
 
 function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, indexes?: Map<string, number>) {
@@ -410,7 +304,7 @@ function renderItem(candidate: BenchmarkAnswerEvidenceCandidate, index: number, 
     .filter((edge) => edge.relationType !== "same_source" && edge.relationType !== "supports")
     .map((edge) => renderRelation(candidate, edge, indexes)));
   const sequences = candidate.facts.filter((fact) => fact.factSequence !== undefined).map((fact) => `  - Session ${fact.sessionId ?? candidate.sourceSessionIds[0] ?? "未知"}, factSequence ${fact.factSequence}: ${fact.factText || fact.normalizedClaim}`);
-  return [`- [${index}] item:${candidate.item.id}`, candidate.evidenceText, ...(sequences.length ? ["  事实抽取顺序：", ...sequences] : []), `  事实发生时间：${formatValidTime(candidate.temporal)}`, ...(candidate.temporal.events?.length ? [`  事件时间映射：${candidate.temporal.events.map((event) => `${event.eventKey} | ${event.label} | ${event.validTime}`).join("；")}`] : []), `  消息发送时间：${candidate.temporal.evidenceTime ?? "未提供"}`, `  来源角色：${candidate.sourceRoles.join(", ") || "unknown"}`, `  来源 Session：${candidate.sourceSessionIds.join(", ") || "未知"}`, `  来源引用：${refs.join(", ") || "无"}`, `  关系：${relations.join("；") || "无"}`].join("\n");
+  return [`- [${index}] item:${candidate.item.id}`, candidate.evidenceText, ...(sequences.length ? ["  事实抽取顺序：", ...sequences] : []), `  事实发生时间：${candidate.temporal.validTime ?? "未提供"}`, ...(candidate.temporal.events?.length ? [`  事件时间映射：${candidate.temporal.events.map((event) => `${event.eventKey} | ${event.label} | ${event.validTime}`).join("；")}`] : []), `  消息发送时间：${candidate.temporal.evidenceTime ?? "未提供"}`, `  来源角色：${candidate.sourceRoles.join(", ") || "unknown"}`, `  来源 Session：${candidate.sourceSessionIds.join(", ") || "未知"}`, `  来源引用：${refs.join(", ") || "无"}`, `  关系：${relations.join("；") || "无"}`].join("\n");
 }
 
 function renderRelation(candidate: BenchmarkAnswerEvidenceCandidate, edge: RelationEdge, indexes?: Map<string, number>) {
@@ -466,24 +360,21 @@ function searchResultToItem(result: ContextSearchResult): ContextPackItem {
 }
 function candidateContextItem(candidate: BenchmarkAnswerEvidenceCandidate): ContextPackItem { return { ...candidate.item, content: candidate.evidenceText, compressedContent: candidate.evidenceText }; }
 function rejection(candidate: BenchmarkAnswerEvidenceCandidate, reason: BenchmarkAnswerRejectReason): BenchmarkAnswerEvidenceRejection { return { itemId: candidate.item.id, layer: candidate.item.layer, reason, contentChars: candidate.evidenceText.length }; }
-// ponytail: 去重限定同层内——STM 与其派生 fact 共享 factIds，跨层合并会把记忆证据吃掉
-function duplicateKey(candidate: BenchmarkAnswerEvidenceCandidate) { const prefix = candidate.item.layer; return candidate.item.factIds.length ? `${prefix}:facts:${[...candidate.item.factIds].sort().join("|")}` : `${prefix}:content:${normalize(candidate.evidenceText)}`; }
+function duplicateKey(candidate: BenchmarkAnswerEvidenceCandidate) { return candidate.item.factIds.length ? `facts:${[...candidate.item.factIds].sort().join("|")}` : `content:${normalize(candidate.evidenceText)}`; }
 function identityIds(candidate: BenchmarkAnswerEvidenceCandidate) { return unique([candidate.item.id, ...candidate.item.memoryIds, ...candidate.item.factIds]); }
 function ownsId(candidate: BenchmarkAnswerEvidenceCandidate, id: string) { return identityIds(candidate).includes(id); }
 function completeness(candidate: BenchmarkAnswerEvidenceCandidate) { return [candidate.temporal.validTime, candidate.temporal.evidenceTime].filter(Boolean).length * 20 + candidate.relations.length * 10 + candidate.sourceRoles.filter((role) => role !== "unknown").length * 8 + candidate.sourceSessionIds.length * 5 + candidate.item.sourceRefs.length * 3 + Math.min(10, candidate.evidenceText.length / 200); }
 function compareCandidates(a: BenchmarkAnswerEvidenceCandidate, b: BenchmarkAnswerEvidenceCandidate) { const ar = a.scoreBreakdown.reranker; const br = b.scoreBreakdown.reranker; if (ar !== undefined && br !== undefined && br !== ar) return br - ar; return b.relevanceScore - a.relevanceScore || (br ?? b.item.score) - (ar ?? a.item.score) || b.item.score - a.item.score || a.item.id.localeCompare(b.item.id); }
-function formatValidTime(temporal: BenchmarkAnswerEvidenceCandidate["temporal"]) { if (temporal.validTime) return temporal.validTime; if (temporal.validTimeStart) return temporal.validTimeEnd ? `${temporal.validTimeStart} ~ ${temporal.validTimeEnd}（区间）` : `${temporal.validTimeStart} 起（区间起点）`; return "未提供"; }
-
-function candidateTime(candidate: BenchmarkAnswerEvidenceCandidate) { return candidate.temporal.validTime ?? candidate.temporal.validTimeStart ?? candidate.temporal.evidenceTime ?? "9999"; }
-function hasTemporal(candidate: BenchmarkAnswerEvidenceCandidate) { return Boolean(candidate.temporal.validTime || candidate.temporal.validTimeStart || candidate.temporal.evidenceTime || candidate.temporal.events?.length); }
+function candidateTime(candidate: BenchmarkAnswerEvidenceCandidate) { return candidate.temporal.validTime ?? candidate.temporal.evidenceTime ?? "9999"; }
+function hasTemporal(candidate: BenchmarkAnswerEvidenceCandidate) { return Boolean(candidate.temporal.validTime || candidate.temporal.evidenceTime || candidate.temporal.events?.length); }
 function needsTemporal(type: string, question: string) { return type.includes("temporal") || /\b(?:when|date|time|before|after|earlier|later|first|last|how long|ago|year|month|week|day)\b/iu.test(question); }
 function needsCalculation(type: string, question: string) { return type.includes("multi-session") && /\b(?:how many|how much|total|sum|difference|cost|spent|amount|count|number|combined|altogether)\b/iu.test(question) || /\b(?:how many|how much|total|sum|difference|combined|altogether)\b/iu.test(question); }
-function needsCount(type: string, question: string) { return type.includes("multi-session") && (/\b(?:how often|times?|occasions?|instances?)\b/iu.test(question) || /\bhow many\b.{0,80}\b(?:did|have|was|were|do)\s+i\b/iu.test(question) || /\bnumber of\b.{0,40}\b(?:events?|visits?|trips?|purchases?|appointments?)\b/iu.test(question)) || /\bspend the most\b/iu.test(question); }
+function needsCount(type: string, question: string) { return type.includes("multi-session") && (/\b(?:how often|times?|occasions?|instances?)\b/iu.test(question) || /\bhow many\b.{0,80}\b(?:did|have|was|were)\s+i\b/iu.test(question) || /\bnumber of\b.{0,40}\b(?:events?|visits?|trips?|purchases?|appointments?)\b/iu.test(question)); }
 const queryStopwords = new Set(["the", "and", "for", "with", "where", "what", "when", "which", "who", "whom", "whose", "why", "how", "long", "did", "does", "was", "were", "have", "has", "had", "much", "many", "from", "that", "this", "there", "their", "your", "you", "about", "after", "before", "into", "onto", "over", "under"]);
 function relevance(question: string, text: string) { const terms = unique(question.toLowerCase().match(/[a-z0-9$]+/g)?.filter((term) => (term.length >= 3 || term.startsWith("$")) && !queryStopwords.has(term)) ?? []); const normalizedQuestion = normalize(question); const normalized = normalize(text); let entityOperandScore = 0; if (/\bage\b/u.test(normalizedQuestion)) { if (/\b(?:me|myself)\b/u.test(normalizedQuestion) && /\bi\b.{0,40}\b(?:am|turned)\b.{0,12}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; if (/\bparents?\b/u.test(normalizedQuestion) && /\b(?:mom|mother|dad|father)\b.{0,16}\b(?:is|was|aged?)\b.{0,8}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; if (/\bgrandparents?\b/u.test(normalizedQuestion) && /\b(?:grandma|grandmother|grandpa|grandfather)\b.{0,16}\b(?:is|was|aged?)\b.{0,8}\b\d{1,3}\b/u.test(normalized)) entityOperandScore += 12; } return terms.filter((term) => normalized.includes(term)).length * 2 + terms.slice(0, -1).filter((term, index) => normalized.includes(`${term} ${terms[index + 1]}`)).length * 5 + terms.filter((term) => /\d/u.test(term) && normalized.includes(term)).length * 3 + entityOperandScore; }
 function inferSourceRoles(refs: SourceRef[], facts: FactItem[], roles: Map<string, BenchmarkAnswerSourceRole>): BenchmarkAnswerSourceRole[] { const direct = unique(facts.flatMap((fact) => (fact.sourceMessageIds ?? []).flatMap((id) => { const role = roles.get(id); return role && role !== "unknown" ? [role] : []; }))) as BenchmarkAnswerSourceRole[]; if (direct.length) return direct; const metadata = unique(refs.flatMap((ref) => { const role = sourceRole(ref.metadata?.role); return role === "unknown" ? [] : [role]; })) as BenchmarkAnswerSourceRole[]; if (metadata.length) return metadata; const inferred = unique(facts.flatMap((fact) => { const type = fact.factType.trim().toLowerCase(); const text = `${fact.factText}\n${fact.sourceClaim ?? ""}`.trim().toLowerCase(); if (type.startsWith("assistant_") || type === "assistant_response" || type.includes("recommendation") || /^(?:assistant|助手|助理)\s*[:：]/u.test(text)) return ["assistant"]; if (type.startsWith("user_") || /^(?:user|用户)\s*[:：]/u.test(text)) return ["user"]; return []; })) as BenchmarkAnswerSourceRole[]; return inferred.length ? inferred : ["unknown"]; }
 function sourceRole(value: unknown): BenchmarkAnswerSourceRole { return value === "user" || value === "assistant" || value === "tool" ? value : "unknown"; }
-function mergeTemporal(temporal: ContextPackItem["temporal"], facts: FactItem[]) { const evidenceTime = temporal.evidenceTime ?? facts.find((fact) => fact.evidenceTime)?.evidenceTime; const validTime = temporal.validTime ?? facts.find((fact) => fact.validTime)?.validTime; const validTimeStart = temporal.validTimeStart ?? facts.find((fact) => fact.validTimeStart)?.validTimeStart; const validTimeEnd = temporal.validTimeEnd ?? facts.find((fact) => fact.validTimeEnd)?.validTimeEnd; const events = [...new Map([...(temporal.events ?? []), ...facts.flatMap((fact) => fact.events ?? [])].map((event) => [`${event.eventKey}\0${event.validTime}`, event])).values()].sort((a, b) => a.validTime.localeCompare(b.validTime) || a.eventKey.localeCompare(b.eventKey)); return { ...(evidenceTime ? { evidenceTime } : {}), ...(validTime && events.length <= 1 ? { validTime } : {}), ...(!validTime && validTimeStart && events.length <= 1 ? { validTimeStart } : {}), ...(!validTime && validTimeEnd && validTimeStart && events.length <= 1 ? { validTimeEnd } : {}), ...(events.length ? { events } : {}) }; }
+function mergeTemporal(temporal: ContextPackItem["temporal"], facts: FactItem[]) { const evidenceTime = temporal.evidenceTime ?? facts.find((fact) => fact.evidenceTime)?.evidenceTime; const validTime = temporal.validTime ?? facts.find((fact) => fact.validTime)?.validTime; const events = [...new Map([...(temporal.events ?? []), ...facts.flatMap((fact) => fact.events ?? [])].map((event) => [`${event.eventKey}\0${event.validTime}`, event])).values()].sort((a, b) => a.validTime.localeCompare(b.validTime) || a.eventKey.localeCompare(b.eventKey)); return { ...(evidenceTime ? { evidenceTime } : {}), ...(validTime && events.length <= 1 ? { validTime } : {}), ...(events.length ? { events } : {}) }; }
 function uniqueSourceRefs(refs: SourceRef[]) { const byId = new Map<string, SourceRef>(); for (const ref of refs) { const key = ref.sourceRefId || `${ref.sourceType}:${ref.sourceId}`; if (!byId.has(key)) byId.set(key, ref); } return [...byId.values()]; }
 function metadataString(ref: SourceRef, key: string) { const value = ref.metadata?.[key]; return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function unique(values: string[]) { return [...new Set(values.filter(Boolean))]; }

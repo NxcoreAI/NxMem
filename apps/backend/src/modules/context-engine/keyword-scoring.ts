@@ -43,7 +43,6 @@ export function buildKeywordCorpusStats(contents: string[], queryTokens: string[
     for (const token of nonHanTokens) {
       if (tokens.has(token)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
     }
-    if (!hanTokens.size) continue;
   }
   if (hanTokens.size) {
     for (const content of contents) {
@@ -145,48 +144,29 @@ function buildSynonymMap(groups: ReadonlyArray<readonly string[]>): ReadonlyMap<
   return result;
 }
 
-export interface KeywordCorpusStatsProvider {
-  getKeywordCorpusVersion(): number;
-  listKeywordCorpusContents(): string[] | Promise<string[]>;
-}
-
-// 语料未变化时复用已算过的 token DF，避免每次查询全量扫描语料
-export function createKeywordCorpusStatsCache() {
-  let version = -1;
-  let documentCount = 0;
-  const documentFrequency = new Map<string, number>();
-
-  return async function getKeywordCorpusStats(
-    provider: KeywordCorpusStatsProvider,
-    queryTokens: string[]
-  ): Promise<KeywordCorpusStats> {
-    const corpusVersion = provider.getKeywordCorpusVersion();
-    if (corpusVersion !== version) {
-      documentFrequency.clear();
-      documentCount = 0;
-      version = corpusVersion;
-    }
-    const tokens = uniqueTokens(queryTokens);
-    const missing = tokens.filter((token) => !documentFrequency.has(token));
-    if (missing.length) {
-      const contents = await provider.listKeywordCorpusContents();
-      documentCount = contents.length;
-      for (const content of contents) {
-        const normalized = normalizeKeywordText(content);
-        for (const token of missing) {
-          if (hasExactToken(normalized, token)) {
-            documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
-          }
-        }
-      }
-    }
-    return {
-      documentCount,
-      documentFrequency: new Map(tokens.map((token) => [token, documentFrequency.get(token) ?? 0]))
-    };
-  };
-}
-
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+// 供 search-context 的 loadKeywordCorpusStats 使用：按 corpus 引用 + 查询词缓存统计结果
+export function createKeywordCorpusStatsCache() {
+  const queryCache = new WeakMap<readonly string[], Map<string, KeywordCorpusStats>>();
+  return async function getStats(
+    repository: { listKeywordCorpusContents(): readonly string[] },
+    queryTokens: string[]
+  ): Promise<KeywordCorpusStats> {
+    const contents = repository.listKeywordCorpusContents();
+    let byQuery = queryCache.get(contents);
+    if (!byQuery) {
+      byQuery = new Map();
+      queryCache.set(contents, byQuery);
+    }
+    const key = [...queryTokens].join("\u0000");
+    let stats = byQuery.get(key);
+    if (!stats) {
+      stats = buildKeywordCorpusStats([...contents], queryTokens);
+      byQuery.set(key, stats);
+    }
+    return stats;
+  };
 }
