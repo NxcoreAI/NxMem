@@ -6,6 +6,7 @@ import {
 } from "../../config.js";
 import { createInMemoryContextEngineRepository } from "../context-engine/service-bootstrap.js";
 import { registerContextEngineRoutes } from "../context-engine/routes.js";
+import { registerMemoryApiRoutes } from "../context-engine/memory-api-routes.js";
 import { createContextEngineService } from "../context-engine/write-event.js";
 import type { ContextEngineRepository } from "../context-engine/persistence/repository.js";
 import { sanitizeDebugSnapshot } from "../context-engine/debug-snapshot.js";
@@ -191,6 +192,7 @@ export function createHealthServer(
   });
 
   registerContextEngineRoutes(app, service, repository, dreamingRuntime);
+  registerMemoryApiRoutes(app, service, repository);
 
   return app;
 }
