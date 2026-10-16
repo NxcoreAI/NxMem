@@ -4927,7 +4927,7 @@ async function callLongMemEvalChatCompletionText(
       model: input.model,
       messages,
       temperature: 0,
-      enable_thinking: false
+      enable_thinking: process.env.LONGMEMEVAL_ENABLE_THINKING === "1"
     },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
