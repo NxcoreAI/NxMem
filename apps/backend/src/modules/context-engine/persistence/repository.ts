@@ -357,7 +357,7 @@ export interface ContextEngineRepository extends ConversationIngestionRepository
   findMemoryOwnersByContextScopeId(contextScopeId: string, ownerTypes?: GraphMemoryOwnerType[]): MaybePromise<MemoryOwnerBySourceHit[]>;
   getFactItemsByIds(factIds: string[]): MaybePromise<FactItem[]>;
   hasCompletedMemoryEvents?(eventIds: string[]): Promise<Record<string, boolean>>;
-  findFactItemsByEventIds(eventIds: string[]): MaybePromise<FactItem[]>;
+  findFactItemsByEventIds(eventIds: string[], contextScopeId?: string): MaybePromise<FactItem[]>;
   upsertGraphMemoryNode(node: GraphMemoryNode): MaybePromise<void>;
   deleteGraphMemoryNode(ownerType: GraphMemoryOwnerType, ownerId: string): MaybePromise<void>;
   searchGraphText(queryTokens: string[], options?: GraphMemorySearchOptions): MaybePromise<GraphMemorySearchHit[]>;

@@ -4926,7 +4926,8 @@ async function callLongMemEvalChatCompletionText(
     body: {
       model: input.model,
       messages,
-      temperature: 0
+      temperature: 0,
+      enable_thinking: false
     },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
@@ -5465,7 +5466,7 @@ async function buildSampleTimelineAggregation(repository: ContextEngineRepositor
     longMemEvalSessionSourceId(questionId, session.sessionId)
   ));
   const [factsByEvent, sessionEvents] = await Promise.all([
-    repository.findFactItemsByEventIds(sampleEventIdList),
+    repository.findFactItemsByEventIds(sampleEventIdList, longMemEvalContextScopeId(questionId)),
     repository.getMemoryEventsByIds(sampleEventIdList)
   ]);
   const facts = factsByEvent.filter((fact) =>

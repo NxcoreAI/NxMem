@@ -1547,6 +1547,14 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
         normalizedMemory.updatedAt
       ]
     );
+    this.syncStmFactLinks(normalizedMemory.memoryDataId, normalizedMemory.sourceFactIds ?? []);
+  }
+
+  private syncStmFactLinks(memoryDataId: string, factIds: readonly string[]) {
+    this.exec(`DELETE FROM stm_fact_links WHERE memory_data_id = ?`, [memoryDataId]);
+    for (const factId of new Set(factIds.filter(Boolean))) {
+      this.exec(`INSERT OR IGNORE INTO stm_fact_links (memory_data_id, fact_id) VALUES (?, ?)`, [memoryDataId, factId]);
+    }
   }
 
   async replaceLongTermMemory(memory: LongTermMemory) {
@@ -2106,6 +2114,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     const index = this.shortTermMemories.findIndex((memory) => memory.memoryDataId === memoryDataId);
     if (index >= 0) this.shortTermMemories.splice(index, 1);
     this.exec(`DELETE FROM short_term_memories WHERE memory_data_id = ?`, [memoryDataId]);
+    this.exec(`DELETE FROM stm_fact_links WHERE memory_data_id = ?`, [memoryDataId]);
   }
 
   async deleteShortTermMemoryArtifacts(memoryDataId: string) {
@@ -2443,10 +2452,13 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     return this.cache.facts.filter((fact) => allowed.has(fact.factId));
   }
 
-  findFactItemsByEventIds(eventIds: string[]): FactItem[] {
+  findFactItemsByEventIds(eventIds: string[], contextScopeId?: string): FactItem[] {
     const allowed = new Set(eventIds.map((item) => item.trim()).filter(Boolean));
     if (!allowed.size) return [];
-    return this.cache.facts.filter((fact) => fact.linkedEventIds.some((eventId) => allowed.has(eventId)));
+    const scope = contextScopeId?.trim();
+    return this.cache.facts.filter((fact) =>
+      fact.linkedEventIds.some((eventId) => allowed.has(eventId)) && (!scope || fact.contextScopeId === scope)
+    );
   }
 
   async upsertGraphMemoryNode(node: GraphMemoryNode) {
@@ -3255,6 +3267,7 @@ export class InMemoryContextEngineRepository implements ContextEngineRepository 
     }
     for (const memoryDataId of deletedShortTermIds) {
       this.exec(`DELETE FROM short_term_memories WHERE memory_data_id = ?`, [memoryDataId]);
+      this.exec(`DELETE FROM stm_fact_links WHERE memory_data_id = ?`, [memoryDataId]);
       await this.deleteIndexBundle("stm", memoryDataId);
     }
     for (const memoryId of deletedLongTermIds) {
@@ -3992,10 +4005,22 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
       this.db.exec("PRAGMA foreign_keys=ON;");
       this.db.exec(schemaSql);
       this.applyMigrations();
+      this.backfillStmFactLinks();
     }
     if (options.loadCache !== false) {
       this.loadFromDatabase();
     }
+  }
+  private backfillStmFactLinks() {
+    const hasLinks = (this.db.prepare(`SELECT 1 FROM stm_fact_links LIMIT 1`).get() as { "1"?: unknown } | undefined)?.["1"];
+    if (hasLinks) return;
+    this.db.exec(`
+      INSERT OR IGNORE INTO stm_fact_links (memory_data_id, fact_id)
+      SELECT DISTINCT s.memory_data_id, je.value
+      FROM short_term_memories s, json_each(
+        CASE WHEN json_valid(s.source_fact_ids) THEN s.source_fact_ids ELSE '[]' END
+      ) je
+    `);
   }
   protected override exec(sql: string, params: Array<unknown> = []) {
     this.db.prepare(sql).run(...(params as never[]));
@@ -8128,13 +8153,16 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     if (!scopedFactIds.size) return [];
 
     const scopedStmIds = new Set<string>();
-    const stmRows = this.db
-      .prepare(`SELECT memory_data_id AS ownerId, source_fact_ids AS sourceFactIds FROM short_term_memories`)
-      .all()
-      .map((row) => normalizeRow(row as Record<string, unknown>)) as Array<{ ownerId: string; sourceFactIds?: unknown }>;
+    const stmRows = chunkSqlValues([...scopedFactIds]).flatMap((batch) => {
+      const placeholders = sqlPlaceholders(batch.length);
+      return this.db.prepare(`
+        SELECT DISTINCT l.memory_data_id AS ownerId
+        FROM stm_fact_links l
+        WHERE l.fact_id IN (${placeholders})
+      `).all(...batch) as Array<{ ownerId?: string }>;
+    });
     for (const row of stmRows) {
-      const sourceFactIds = Array.isArray(row.sourceFactIds) ? row.sourceFactIds as string[] : [];
-      if (sourceFactIds.some((factId) => scopedFactIds.has(factId))) scopedStmIds.add(row.ownerId);
+      if (row.ownerId) scopedStmIds.add(row.ownerId);
     }
 
     const hits: MemoryOwnerBySourceHit[] = [];
@@ -8214,9 +8242,13 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
     }).sort((left, right) => left.factId.localeCompare(right.factId));
   }
 
-  override findFactItemsByEventIds(eventIds: string[]): FactItem[] {
+  override findFactItemsByEventIds(eventIds: string[], contextScopeId?: string): FactItem[] {
     const allowed = [...new Set(eventIds.map((item) => item.trim()).filter(Boolean))];
     if (!allowed.length) return [];
+    // ponytail: json_each 无法走索引，必须先用 context_scope_id 把行数缩到单题范围，
+    // 否则 28GB 库上一次全扫 ~5.5s，每题几十次调用把评测拖成 ~3 分钟/题
+    const scopeClause = contextScopeId?.trim() ? "AND fact.context_scope_id = ?" : "";
+    const scopeParams = contextScopeId?.trim() ? [contextScopeId.trim()] : [];
     const factIds = chunkSqlValues(allowed).flatMap((batch) => {
       const placeholders = sqlPlaceholders(batch.length);
       return this.db.prepare(`
@@ -8225,9 +8257,9 @@ export class SqliteContextEngineRepository extends InMemoryContextEngineReposito
         JOIN json_each(
           CASE WHEN json_valid(fact.linked_event_ids) THEN fact.linked_event_ids ELSE '[]' END
         ) AS linked_event
-        WHERE linked_event.value IN (${placeholders})
+        WHERE linked_event.value IN (${placeholders}) ${scopeClause}
         ORDER BY fact.fact_id
-      `).all(...batch).flatMap((row) => {
+      `).all(...batch, ...scopeParams).flatMap((row) => {
         const factId = (row as { factId?: unknown }).factId;
         return typeof factId === "string" && factId ? [factId] : [];
       });
