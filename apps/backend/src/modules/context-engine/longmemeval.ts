@@ -159,8 +159,8 @@ const longMemEvalContextRetryAttempts = 3;
 export const longMemEvalAnswerCandidateLimit = 100;
 const longMemEvalRetrievalCompatibilityLimit = 10;
 export const longMemEvalAnswerContextTokenBudget = 20_000;
-export const longMemEvalAnswerEvidenceLimit = 20;
-const longMemEvalAnswerBaselineCandidateCount = 12;
+export const longMemEvalAnswerEvidenceLimit = 40;
+const longMemEvalAnswerBaselineCandidateCount = 24;
 const longMemEvalAnswerCompletionCandidateCount = longMemEvalAnswerEvidenceLimit - longMemEvalAnswerBaselineCandidateCount;
 const longMemEvalContextLimiters = new WeakMap<ContextEngineRepository, AsyncConcurrencyLimiter>();
 
