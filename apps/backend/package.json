@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch --import tsx src/main.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json --noCheck && cp src/modules/context-engine/persistence/schema.sql dist/modules/context-engine/persistence/",
+    "start": "node --env-file=.env dist/main.js",
     "lint": "echo 'backend lint not configured yet'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "EMBEDDING_PROTOCOL=deterministic-test EMBEDDING_MODEL=deterministic-test EMBEDDING_DIMENSIONS=512 RERANKER_ENABLED=false node --import tsx --test \"src/**/*.test.ts\"",
