@@ -20,7 +20,7 @@ import {
 } from "./search-context.js";
 import type { ContextDebugSnapshot, ContextEngineRepository } from "./persistence/repository.js";
 import { SqliteContextEngineRepository } from "./persistence/memory-repository.js";
-import { assertNeo4jCredentials, type GraphMemoryStore } from "./persistence/graph-store.js";
+import type { GraphMemoryStore } from "./persistence/graph-store.js";
 import { Neo4jGraphMemoryStore } from "./persistence/neo4j-graph-store.js";
 import { buildTimelineAggregatedFacts, type TimelineAggregatedFact } from "./timeline-aggregation.js";
 import type { ContextPackTrace, FactItem, MemoryEvent, RelationEdge, ShortTermMemory, SourceRef } from "./domain.js";
@@ -110,8 +110,6 @@ export interface LongMemEvalOptions {
   logger?: LongMemEvalLogger | undefined;
   onProgress?: (progress: LongMemEvalProgress) => void;
   logIngestRequestContext?: boolean;
-  /** 只评测指定 questionId 的样本（多进程分片并行用；ingest 与答题都只处理命中的样本）。 */
-  questionIds?: string[];
   enableLtmReinforcement?: boolean;
   diagnosticsPath?: string;
   /** Independent sample-summary JSONL trace. Defaults to a run-specific sibling of diagnosticsPath. */
@@ -161,12 +159,9 @@ const longMemEvalContextRetryAttempts = 3;
 export const longMemEvalAnswerCandidateLimit = 100;
 const longMemEvalRetrievalCompatibilityLimit = 10;
 export const longMemEvalAnswerContextTokenBudget = 20_000;
-export const longMemEvalAnswerEvidenceLimit = 60;
-// 图邻居召回：top10 种子记忆沿关系边 1-hop 扩展补充候选（A/B 开关）。
-const longMemEvalGraphNeighborRecall = false;
-const longMemEvalAnswerBaselineCandidateCount = 12;
+export const longMemEvalAnswerEvidenceLimit = 40;
+const longMemEvalAnswerBaselineCandidateCount = 24;
 const longMemEvalAnswerCompletionCandidateCount = longMemEvalAnswerEvidenceLimit - longMemEvalAnswerBaselineCandidateCount;
-const longMemEvalAnswerDisableReasoning = process.env.LONGMEMEVAL_ANSWER_DISABLE_REASONING === "true";
 const longMemEvalContextLimiters = new WeakMap<ContextEngineRepository, AsyncConcurrencyLimiter>();
 
 interface AsyncConcurrencyLimiter {
@@ -709,7 +704,7 @@ interface LongMemEvalAnswerContext {
 
 type LongMemEvalAnswerTemporal = Pick<
   ContextPackItem["temporal"],
-  "evidenceTime" | "validTime" | "validTimeStart" | "validTimeEnd" | "events"
+  "evidenceTime" | "validTime" | "events"
 >;
 
 export type LongMemEvalAnswerSourceRole = "user" | "assistant" | "tool" | "unknown";
@@ -856,7 +851,7 @@ export async function evaluateLongMemEvalDataset(
   const answerOnlyEvaluation = options.answerOnlyEvaluation === true;
   const runLtmDreaming = false;
   const disableIngestLlm = options.disableIngestLlm === true;
-  const strictLlm = options.allowLlmFallback !== true;
+  const strictLlm = options.allowLlmFallback === false;
   const skipStmAdmission = options.skipStmAdmission === true;
   const answerContextMode = normalizeAnswerContextMode(options.answerContextMode);
   const ingestSampleConcurrency = normalizeIngestSampleConcurrency(options.ingestSampleConcurrency);
@@ -883,16 +878,7 @@ export async function evaluateLongMemEvalDataset(
     : diagnosticsPath
       ? longMemEvalSiblingTracePath(diagnosticsPath, runId)
       : undefined;
-  const loadedSamples = await loadLongMemEvalSamples(datasetPath);
-  const questionIdFilter = options.questionIds?.length ? new Set(options.questionIds) : undefined;
-  const samples = questionIdFilter
-    ? loadedSamples.filter((sample) => questionIdFilter.has(readQuestionId(sample)))
-    : loadedSamples;
-  if (questionIdFilter && samples.length !== questionIdFilter.size) {
-    const found = new Set(samples.map((sample) => readQuestionId(sample)));
-    const missing = [...questionIdFilter].filter((id) => !found.has(id));
-    throw new LongMemEvalArtifactError("QUESTION_ID_NOT_FOUND", `questionIds not in dataset: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ` (+${missing.length - 5} more)` : ""}`);
-  }
+  const samples = await loadLongMemEvalSamples(datasetPath);
   const datasetIdentity = await createLongMemEvalDatasetIdentity(datasetPath);
   const sampleIdentities = samples.map((sample, index) => ({ index: index + 1, questionId: readQuestionId(sample) }));
   throwIfLongMemEvalCancelled(signal);
@@ -1035,8 +1021,13 @@ export async function evaluateLongMemEvalDataset(
     const judgeConfig = resolveJudgeConfig(options.llm, config);
     const answerLimiter = createAsyncConcurrencyLimiter(answerConcurrency);
     const judgeLimiter = createAsyncConcurrencyLimiter(judgeConcurrency);
-    // answer-only/model-only 一律复用库内已入库数据，缺失的 session 按现状直接答题
-    const canReuseCompletedIngest = modelOnlyEvaluation || answerOnlyEvaluation;
+    // answer-only 信库直接答题：不做入库完整性预检，缺的会话按缺失处理（与基线同口径可对比）
+    const canReuseCompletedIngest = answerOnlyEvaluation
+      ? true
+      : modelOnlyEvaluation && await allSampleTimelineEventsExist(repository, samples);
+    if (modelOnlyEvaluation && !answerOnlyEvaluation && answerContextMode === "retrieval" && !canReuseCompletedIngest) {
+      throw new Error("LongMemEval model-only retrieval requires all samples to be pre-ingested; rerun without --model-only to build the store first");
+    }
 
     const sampleSessionOffsets: number[] = [];
     let nextSessionOffset = 0;
@@ -1390,7 +1381,7 @@ async function executeLongMemEvalSampleAndCommit(
           logger: input.logger,
           logIngestRequestContext: input.logIngestRequestContext,
           disableIngestLlm: input.disableIngestLlm,
-          allowLlmFallback: !input.strictLlm,
+          ...(input.strictLlm ? { allowLlmFallback: false } : {}),
           skipStmAdmission: input.skipStmAdmission,
           llm: withLongMemEvalStreamingTransport(input.llm?.extraction, input.signal),
           trace: input.trace,
@@ -1543,7 +1534,7 @@ async function executeLongMemEvalSampleAndCommit(
           },
           execute: ({ stageAttempt }) => runDreamingInBatches(run.repository, {
           ...withLongMemEvalStreamingTransport(input.llm?.extraction, input.signal),
-          fallbackMode: input.strictLlm === false ? "allow" : "throw",
+          fallbackMode: input.strictLlm ? "throw" : "allow",
           observer: createLongMemEvalTraceLlmObserver(input, "ltm", stageAttempt)
           }, {
           logger: input.logger,
@@ -3215,7 +3206,6 @@ async function generateHypothesis(
   const prompt = buildLongMemEvalAnswerPrompt({
     question: context.question,
     ...(context.questionDate ? { questionDate: context.questionDate } : {}),
-    ...(input?.questionType ? { questionType: input.questionType } : {}),
     serializedPrompt: answerContext.serializedPrompt
   });
 
@@ -3230,7 +3220,7 @@ async function generateHypothesis(
     sampleCount: input?.sampleCount,
     endpoint: `${normalizeBaseUrl(llm?.baseUrl ?? getContextEngineConfig().llm.baseUrl)}/chat/completions`,
     model: llm?.model ?? getContextEngineConfig().llm.model,
-    disableReasoning: longMemEvalAnswerDisableReasoning,
+    disableReasoning: false,
     contextSummaryPreview: input?.contextSummary ? limitLongMemEvalPreview(input.contextSummary, longMemEvalLogPreviewCharLimit) : undefined,
     ...summarizeAnswerContextForLog(answerContext),
     answerRankedSessionIds: rankedSessionIds.slice(0, 10),
@@ -3242,7 +3232,7 @@ async function generateHypothesis(
     model: llm?.model ?? getContextEngineConfig().llm.model,
     ...(llm?.apiKey || getContextEngineConfig().llm.apiKey ? { apiKey: llm?.apiKey ?? getContextEngineConfig().llm.apiKey } : {}),
     prompt,
-    disableReasoning: longMemEvalAnswerDisableReasoning,
+    disableReasoning: false,
     logger: input?.logger,
     ...(input?.signal ? { signal: input.signal } : {}),
     logContext: {
@@ -3274,7 +3264,7 @@ async function generateHypothesis(
         skipReason: answer.reason
       };
     }
-    if (input?.allowLlmFallback !== true) {
+    if (input?.allowLlmFallback === false) {
       throw new Error(`answer_fallback:${answer.reason}`);
     }
     return {
@@ -3455,18 +3445,16 @@ export async function buildLongMemEvalAnswerContext(
       contextScopeId: context.contextScopeId,
       ...(context.questionDate ? {
         referenceTime: normalizeLongMemEvalDateTime(context.questionDate),
-        timezone: "UTC",
         displayReferenceTime: context.questionDate
       } : {}),
       modelRunId: context.modelRunId,
       storeNamespace: context.storeNamespace,
-      allowedLayers: ["fact", "stm"],
+      allowedLayers: ["stm"],
       candidateLimit: longMemEvalAnswerCandidateLimit,
       evidenceLimit: longMemEvalAnswerEvidenceLimit,
       tokenBudget,
       includeInactive: true,
-      factRetrieval: true,
-      graphNeighborRecall: longMemEvalGraphNeighborRecall,
+      factRetrieval: false,
       resolveSessionId: (source) => longMemEvalSessionIdForQuestion(source, context.questionId)
     })
   });
@@ -3520,7 +3508,7 @@ export async function buildLongMemEvalAnswerContext(
         renderedPromptHasTemporalMetadata: candidates.some((candidate) =>
           shared.selectedItems.some((item) => item.id === candidate.item.id) &&
           longMemEvalAnswerCandidateHasTemporalEvidence(candidate) &&
-          [candidate.temporal.validTime, candidate.temporal.validTimeStart, candidate.temporal.evidenceTime]
+          [candidate.temporal.validTime, candidate.temporal.evidenceTime]
             .some((value) => value ? shared.serializedPrompt.includes(value) : false)
         )
       };
@@ -3810,8 +3798,6 @@ function mergeLongMemEvalAnswerTemporal(
 ): LongMemEvalAnswerTemporal {
   const evidenceTime = temporal.evidenceTime ?? facts.find((fact) => fact.evidenceTime)?.evidenceTime;
   const validTime = temporal.validTime ?? facts.find((fact) => fact.validTime)?.validTime;
-  const validTimeStart = temporal.validTimeStart ?? facts.find((fact) => fact.validTimeStart)?.validTimeStart;
-  const validTimeEnd = temporal.validTimeEnd ?? facts.find((fact) => fact.validTimeEnd)?.validTimeEnd;
   const events = mergeLongMemEvalTemporalEvents([
     ...(temporal.events ?? []),
     ...facts.flatMap((fact) => fact.events ?? [])
@@ -3819,8 +3805,6 @@ function mergeLongMemEvalAnswerTemporal(
   return {
     ...(evidenceTime ? { evidenceTime } : {}),
     ...(validTime && events.length <= 1 ? { validTime } : {}),
-    ...(!validTime && validTimeStart && events.length <= 1 ? { validTimeStart } : {}),
-    ...(!validTime && validTimeEnd && validTimeStart && events.length <= 1 ? { validTimeEnd } : {}),
     ...(events.length ? { events } : {})
   };
 }
@@ -4080,16 +4064,6 @@ function renderLongMemEvalAnswerRelation(
   return `${edge.relationType} ${counterpart}`;
 }
 
-function formatLongMemEvalValidTime(temporal: LongMemEvalAnswerTemporal) {
-  if (temporal.validTime) return temporal.validTime;
-  if (temporal.validTimeStart) {
-    return temporal.validTimeEnd
-      ? `${temporal.validTimeStart} ~ ${temporal.validTimeEnd}（区间）`
-      : `${temporal.validTimeStart} 起（区间起点）`;
-  }
-  return "未提供";
-}
-
 function renderLongMemEvalAnswerEvidenceItem(
   candidate: LongMemEvalAnswerEvidenceCandidate,
   index: number,
@@ -4111,7 +4085,7 @@ function renderLongMemEvalAnswerEvidenceItem(
     `- [${index}] item:${candidate.item.id}`,
     candidate.evidenceText,
     ...(sequencedFacts.length ? ["  事实抽取顺序：", ...sequencedFacts] : []),
-    `  事实发生时间：${formatLongMemEvalValidTime(candidate.temporal)}`,
+    `  事实发生时间：${candidate.temporal.validTime ?? "未提供"}`,
     ...(candidate.temporal.events?.length
       ? [`  事件时间映射：${candidate.temporal.events.map((event) => `${event.eventKey} | ${event.label} | ${event.validTime}`).join("；")}`]
       : []),
@@ -4170,25 +4144,18 @@ function longMemEvalAnswerCandidateHasTemporalEvidence(candidate: LongMemEvalAns
   return Boolean(candidate.temporal.validTime || candidate.temporal.evidenceTime || candidate.temporal.events?.length);
 }
 
-// ponytail: rerank HTTP API 分数在小数第 6 位浮点抖动,严格不等比较会让近并列证据顺序漂移
-// (pack 截断边界翻转 → LLM 答案波动),量化到万分位消除
-function quantizeRerankerScore(score: number) {
-  return Math.round(score * 10_000);
-}
-
-export function compareLongMemEvalAnswerCandidatesByReranker(
+function compareLongMemEvalAnswerCandidatesByReranker(
   left: LongMemEvalAnswerEvidenceCandidate,
   right: LongMemEvalAnswerEvidenceCandidate
 ) {
   const leftRerankerScore = left.scoreBreakdown.reranker;
   const rightRerankerScore = right.scoreBreakdown.reranker;
   if (leftRerankerScore !== undefined && rightRerankerScore !== undefined) {
-    const rerankerOrder = quantizeRerankerScore(rightRerankerScore) - quantizeRerankerScore(leftRerankerScore);
+    const rerankerOrder = rightRerankerScore - leftRerankerScore;
     if (rerankerOrder) return rerankerOrder;
   }
   return right.relevanceScore - left.relevanceScore ||
-    (rightRerankerScore !== undefined ? quantizeRerankerScore(rightRerankerScore) : right.item.score) -
-      (leftRerankerScore !== undefined ? quantizeRerankerScore(leftRerankerScore) : left.item.score) ||
+    (rightRerankerScore ?? right.item.score) - (leftRerankerScore ?? left.item.score) ||
     right.item.score - left.item.score ||
     left.item.id.localeCompare(right.item.id);
 }
@@ -4521,7 +4488,7 @@ function longMemEvalAnswerContextQuery(context: SampleContext): Omit<ContextQuer
     tenantId: "local",
     principalId: "longmemeval",
     contextScopeId: context.contextScopeId,
-    ...(context.questionDate ? { referenceTime: normalizeLongMemEvalDateTime(context.questionDate), timezone: "UTC" } : {}),
+    ...(context.questionDate ? { referenceTime: normalizeLongMemEvalDateTime(context.questionDate) } : {}),
     includeInactive: true,
     limit: longMemEvalAnswerCandidateLimit,
     offset: 0
@@ -4582,15 +4549,9 @@ function renderRetrievalResultsPrompt(task: string, items: ContextPackItem[]) {
 export function buildLongMemEvalAnswerPrompt(input: {
   question: string;
   questionDate?: string;
-  questionType?: string;
   serializedPrompt: string;
   answer?: string;
 }) {
-  const preferenceGuidance = input.questionType === "single-session-preference"
-    ? [
-        "This is a preference question: the user asks for a suggestion or recommendation. Do not search the Context Pack for a ready-made answer to quote — instead infer the user's established preferences from their past conversations (foods they liked, hotel features they wanted, activities they enjoyed), then apply those preferences to craft the requested suggestion directly. An existing preference for a similar situation (e.g. a hotel with a great view in another city) is sufficient evidence; generalize it to the current request instead of answering 'cannot be determined'."
-      ]
-    : [];
   return [
     "Answer the question using the provided Context Pack.",
     `Question: ${input.question}`,
@@ -4613,19 +4574,15 @@ export function buildLongMemEvalAnswerPrompt(input: {
     "- Counting events in compound statements: one fact says the user attended dinners at Alex's place and at Blake's place, and another fact says the user attended dinner at Casey's place. These are three distinct attended dinners, even though two appear in one sentence.",
     "- Counting distinct entities rather than actions: the user cleaned and serviced the same road bike, then planned to service a commuter bike. For a question asking how many bikes were serviced or planned for service, the answer is two bikes, not three actions.",
     "- Subject and action-state filtering: if the question asks what the user has actually used, count only facts that state the user used, made, served, or otherwise completed the relevant action. Do not count ingredients that the assistant merely recommended, listed in a hypothetical recipe, or suggested for future experimentation. For example, if the user made cocktails with lime, orange, and lemon, while the assistant only suggested grapefruit and yuzu mixers, the count is three, not five.",
-    "- Category breadth: when counting items of a category (e.g. devices for health tracking), include every item the user said they use for that purpose, even general-purpose ones like a phone used for health reminders; do not narrow the category to “dedicated” devices only.",
-    "- Default attribution: when some events of the same kind lack an explicit reason while the others of that kind are attributed to a cause (e.g. missed runs due to work), attribute the unexplained ones to the same cause instead of excluding them.",
-    "- Loose time windows: for fuzzy relative expressions (“last month” vs “past month”, “recently”), prefer the inclusive interpretation that keeps borderline events inside the window; excluding a borderline event requires explicit evidence it falls outside.",
-    "These inclusive defaults apply only to the borderline inclusion of events that are already recorded. They never override missing evidence: if a required item or operand has no supporting fact in the Context Pack at all, answer that it cannot be determined.",
     "- Difference and duration: if a taxi costs $70 and a train costs $15, the savings are $70 - $15 = $55. If total tenure is 4 years 2 months and the prior role lasted 2 years 9 months, convert to months before subtracting: 50 - 33 = 17 months = 1 year 5 months.",
     "- Event-relative duration: if the user attended a baking class on March 20 and made a friend's birthday cake on April 10, then 'How many days ago did I attend the baking class when I made my friend's birthday cake?' uses the cake-making event as the reference point: April 10 - March 20 = 21 days, not the Question Date.",
     "- Insufficient operands: if the taxi price is known but the bus price is not present in the Context Pack, the savings cannot be determined. Do not import outside prices or guess the missing operand.",
 
     "For temporal reasoning, prefer validTime when it is available and consistent with the fact text. Otherwise, infer the event time from factText or sourceClaim together with that fact’s evidenceTime. Resolve relative expressions such as “today,” “yesterday,” “just got back,” “last week,” and “ago” against the fact’s evidenceTime, not the question date. Preserve the precision supported by the text, and do not automatically treat evidenceTime as the event time. A missing validTime alone is not insufficient evidence; answer “cannot be determined” only when no defensible inference provides the precision required by the question.",
     "For temporal reasoning, identify the events and their relationship before calculating. - For “between A and B,” use A and B as the temporal operands. - When “when,” “by the time,” “at the time,” or “since” makes B the reference event, calculate up to B, not the Question Date. - Use the Question Date only when the question is relative to the present and provides no other reference event.",
-    ...preferenceGuidance,
     "For counts, list, justify, and deduplicate qualifying items first in your internal reasoning, then put only the concise result in the final response.",
     "For an update, correction, replacement, latest-state, or current-state question, when facts concern the same entity and property within the same Session, prefer the fact with the larger factSequence unless explicit validTime, evidenceTime, or correction semantics show otherwise. Across different Sessions, determine recency from validTime, evidenceTime, and explicit relationships instead of comparing factSequence values, and treat the chronologically later applicable fact as the latest fact to prioritize when answering.",
+    "For suggestion, recommendation, tips, or advice-seeking requests (e.g. \"Can you suggest…\", \"Any tips?\", \"What do you think?\"): do NOT answer that no information is available. Search the Context Pack for the user's existing facts, possessions, plans, or past experiences related to the request's topic, and answer in the form \"The user would prefer responses that …\", building the preference directly on those facts.",
     "Answer only based on information supported by the Context Pack. If the evidence is insufficient or ambiguous, say that the answer cannot be determined.",
     "Answer concisely.",
     `Context Pack:\n${input.serializedPrompt}`
@@ -4806,7 +4763,7 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-export async function judgeHypothesis(
+async function judgeHypothesis(
   hypothesis: string,
   context: SampleContext,
   judge: JudgeConfig,
@@ -4873,7 +4830,7 @@ export async function judgeHypothesis(
       if (response.reason.startsWith("retry_exhausted:")) {
         return skippedJudgment(judge, response.reason);
       }
-      if (input?.allowLlmFallback !== true) {
+      if (input?.allowLlmFallback === false) {
         throw new Error(`judge_fallback:${response.reason}`);
       }
       return {
@@ -4886,49 +4843,17 @@ export async function judgeHypothesis(
       };
     }
     const normalized = normalizeText(response.text);
-    let label: "correct" | "incorrect" = normalized.startsWith("yes") || normalized.includes(" yes") ? "correct" : "incorrect";
-    let judgeText = response.text;
-    if (label === "incorrect" && fallbackJudgeConflictRecheckEligible(context, hypothesis)) {
-      const recheckPrompt = buildJudgeRecheckPrompt(context, hypothesis);
-      const recheck = await callOpenAiCompatibleText({
-        baseUrl: judge.baseUrl || extraction?.baseUrl || getContextEngineConfig().llm.baseUrl,
-        model: judge.model || extraction?.model || getContextEngineConfig().llm.model,
-        ...(apiKey ? { apiKey } : {}),
-        prompt: recheckPrompt,
-        disableReasoning: true,
-        logger: input?.logger,
-        ...(input?.observer ? { observer: input.observer } : {}),
-        ...(input?.signal ? { signal: input.signal } : {}),
-        logContext: {
-          stage: "judge_recheck",
-          questionId: input?.questionId,
-          questionType: input?.questionType,
-          contextScopeId: input?.contextScopeId ?? context.contextScopeId,
-          modelRunId: input?.modelRunId,
-          storeNamespace: input?.storeNamespace,
-          sampleIndex: input?.sampleIndex,
-          sampleCount: input?.sampleCount,
-          promptPreview: limitLongMemEvalPreview(recheckPrompt, longMemEvalLogPreviewCharLimit),
-          hypothesisPreview: limitLongMemEvalPreview(hypothesis, longMemEvalLogPreviewCharLimit)
-        }
-      });
-      if (recheck.ok) {
-        const recheckNormalized = normalizeText(recheck.text);
-        const recheckYes = recheckNormalized.startsWith("yes") || recheckNormalized.includes(" yes");
-        if (recheckYes) label = "correct";
-        judgeText = `${response.text} | recheck: ${recheck.text.trim()}`;
-      }
-    }
+    const label = normalized.startsWith("yes") || normalized.includes(" yes") ? "correct" : "incorrect";
     return {
       label,
       score: label === "correct" ? 1 : 0,
-      reason: fallbackJudgeReason(context, hypothesis, label === "correct", judgeText),
+      reason: fallbackJudgeReason(context, hypothesis, label === "correct", response.text),
       model: judge.model || extraction?.model || getContextEngineConfig().llm.model,
       baseUrl: judge.baseUrl || extraction?.baseUrl || getContextEngineConfig().llm.baseUrl,
-      raw: { text: judgeText }
+      raw: { text: response.text }
     };
   } catch (error) {
-    if (input?.allowLlmFallback !== true) throw error;
+    if (input?.allowLlmFallback === false) throw error;
     return {
       label: fallbackCorrect ? "correct" : "incorrect",
       score: fallbackCorrect ? 1 : 0,
@@ -4991,7 +4916,6 @@ async function callLongMemEvalChatCompletionText(
     observer?: OpenAiCompatibleRequestObserver;
     signal?: AbortSignal;
     operation?: string;
-    disableReasoning?: boolean;
   },
   messages: Array<{ role: string; content: string }>
 ): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
@@ -5004,9 +4928,7 @@ async function callLongMemEvalChatCompletionText(
       model: input.model,
       messages,
       temperature: 0,
-      // dashscope qwen3 系列通过 enable_thinking 控制思考模式，非流式下默认即关闭，
-      // 显式传 false 以防默认行为变化
-      ...(input.disableReasoning ? { enable_thinking: false } : {})
+      enable_thinking: process.env.LONGMEMEVAL_ENABLE_THINKING === "1"
     },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
@@ -5218,17 +5140,6 @@ function flattenSessionTranscript(turns: LongMemEvalSessionTurn[]): string {
     .join("\n");
 }
 
-function fallbackJudgeConflictRecheckEligible(context: SampleContext, hypothesis: string) {
-  return !context.questionId.endsWith("_abs") && containsAnswer(hypothesis, context.answer);
-}
-
-function buildJudgeRecheckPrompt(context: SampleContext, hypothesis: string) {
-  return [
-    buildJudgePrompt(context, hypothesis),
-    "Attention: the correct answer text appears verbatim in the model response. If the response's final answer matches the correct answer, answer yes, even if the response's reasoning mentions dates, durations, or other details that differ from the question's phrasing."
-  ].join("\n\n");
-}
-
 function buildJudgePrompt(context: SampleContext, hypothesis: string) {
   const questionType = context.questionType;
   const abstention = context.questionId.endsWith("_abs");
@@ -5348,10 +5259,7 @@ function resolveJudgeConfig(
 }
 
 function exactMatchScore(answer: string, hypothesis: string) {
-  const normalized = normalizeText(hypothesis);
-  const marker = normalized.lastIndexOf("answer:");
-  const finalAnswer = marker >= 0 ? normalized.slice(marker + "answer:".length) : normalized;
-  return finalAnswer.includes(normalizeText(answer));
+  return normalizeText(hypothesis).includes(normalizeText(answer));
 }
 
 function fallbackHypothesis(reason: string) {
@@ -5559,7 +5467,7 @@ async function buildSampleTimelineAggregation(repository: ContextEngineRepositor
     longMemEvalSessionSourceId(questionId, session.sessionId)
   ));
   const [factsByEvent, sessionEvents] = await Promise.all([
-    repository.findFactItemsByEventIds(sampleEventIdList),
+    repository.findFactItemsByEventIds(sampleEventIdList, longMemEvalContextScopeId(questionId)),
     repository.getMemoryEventsByIds(sampleEventIdList)
   ]);
   const facts = factsByEvent.filter((fact) =>
@@ -5847,12 +5755,11 @@ async function ingestSampleTimeline(
     trace?: LongMemEvalSampleTraceContext;
     stageAttempt?: number;
   }
-): Promise<{ sessions: LongMemEvalSessionDocument[]; ingestedSessions: number; skippedSessions: number; failedSessions: number }> {
+): Promise<{ sessions: LongMemEvalSessionDocument[]; ingestedSessions: number; skippedSessions: number }> {
   const sessions = buildSessionDocuments([sample]);
-  if (!sessions.length) return { sessions, ingestedSessions: 0, skippedSessions: 0, failedSessions: 0 };
+  if (!sessions.length) return { sessions, ingestedSessions: 0, skippedSessions: 0 };
   let ingestedSessions = 0;
   let skippedSessions = 0;
-  let failedSessions = 0;
   let completedSessions = 0;
 
   const results = await mapWithConcurrencyUntilError(sessions, input.ingestSessionConcurrency, async (session, sessionIndex) => {
@@ -5944,7 +5851,7 @@ async function ingestSampleTimeline(
         )
       } : { observer }, {
         disableIngestLlm: input.disableIngestLlm === true,
-        allowLlmFallback: input.disableIngestLlm === true || input.allowLlmFallback === true,
+        allowLlmFallback: input.disableIngestLlm === true || input.allowLlmFallback !== false,
         skipStmAdmission: input.skipStmAdmission === true,
         ...(input.trace ? { trace: input.trace } : {}),
         stageAttempt: input.stageAttempt ?? 1,
@@ -5952,36 +5859,7 @@ async function ingestSampleTimeline(
       });
     } catch (error) {
       await repository.deleteMemoryEventCascade(event.eventId, { recordChangeEvent: false });
-      failedSessions += 1;
-      logLongMemEvalRequest(input.logger, {
-        stage: "ingest",
-        ingestStage: "finalize",
-        phase: "sample_session_event_failed",
-        questionId: readQuestionId(sample),
-        questionType: readQuestionType(sample),
-        currentSampleIndex: input.sampleIndex,
-        currentSampleCount: input.sampleCount,
-        eventId: event.eventId,
-        sessionId: session.sessionId,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      });
-      input.emitProgress({
-        stage: "ingest",
-        ingestStage: "finalize",
-        ...sampleProgress,
-        stageMessage: `haystack session 入库失败，跳过该 session: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`,
-        stageProgress: percent(input.sampleIndex, input.sampleCount),
-        batchProgress: percent(processedSessionCount, input.totalSessions),
-        batchMessage: "入库收尾批次",
-        processedSamples: input.sampleIndex,
-        processedSessions: processedSessionCount,
-        advanceSteps: 1,
-        advanceSessions: 1,
-        ...(completedSessions + failedSessions === sessions.length ? { advanceSamples: 1 } : {}),
-        batchIndex: processedSessionCount,
-        batchCount: input.totalSessions
-      });
-      return { ingested: 0, skipped: 0 };
+      throw error;
     }
 
     if (input.logIngestRequestContext) {
@@ -6016,7 +5894,7 @@ async function ingestSampleTimeline(
       processedSessions: processedSessionCount,
       advanceSteps: 1,
       advanceSessions: 1,
-      ...(completedSessions + failedSessions === sessions.length ? { advanceSamples: 1 } : {}),
+      ...(completedSessions === sessions.length ? { advanceSamples: 1 } : {}),
       batchIndex: processedSessionCount,
       batchCount: input.totalSessions
     });
@@ -6027,7 +5905,7 @@ async function ingestSampleTimeline(
     skippedSessions += result.skipped;
   }
   await yieldToEventLoop();
-  return { sessions, ingestedSessions, skippedSessions, failedSessions };
+  return { sessions, ingestedSessions, skippedSessions };
 }
 
 async function traceLongMemEvalIngestionOperation(
@@ -6239,19 +6117,14 @@ async function runLongMemEvalSamplePipeline(
   event: MemoryEvent,
   llm: LlmFactFusionOptions | undefined,
   options: {
-    disableIngestLlm?: boolean;    allowLlmFallback?: boolean;
+    disableIngestLlm?: boolean;
+    allowLlmFallback?: boolean;
     skipStmAdmission?: boolean;
     trace?: LongMemEvalSampleTraceContext;
     stageAttempt?: number;
     sessionId?: string;
   } = {}
 ) {
-  // ponytail: stage retry attempt 间残留（facts+batch 已写、task 未成功）会让重试撞 fact batch 冲突；
-  // 每次 attempt 开始前级联清掉未完成残留
-  if (await hasMemoryEvent(repository, event.eventId) &&
-      !await hasCompletedMemoryEvent(repository, event.eventId)) {
-    await repository.deleteMemoryEventCascade(event.eventId, { recordChangeEvent: false });
-  }
   let task = createPipelineTask(event);
   const traceInput = {
     ...(options.trace ? { trace: options.trace } : {}),
@@ -6286,7 +6159,7 @@ async function runLongMemEvalSamplePipeline(
         ? {
             llm: {
               ...llm,
-              fallbackMode: options.disableIngestLlm === true || options.allowLlmFallback === true ? "allow" : "throw",
+              fallbackMode: options.disableIngestLlm === true || options.allowLlmFallback !== false ? "allow" : "throw",
               emptyFactsMode: "allow",
               semanticRetryMaxAttempts: 2
             }
@@ -6513,6 +6386,26 @@ async function hasCompletedMemoryEvent(repository: ContextEngineRepository, even
   return task?.status === "succeeded";
 }
 
+async function allSampleTimelineEventsExist(repository: ContextEngineRepository, samples: LongMemEvalSample[]) {
+  if (!samples.length) return false;
+  const eventIds: string[] = [];
+  for (const sample of samples) {
+    const sessions = buildSessionDocuments([sample]);
+    if (!sessions.length) return false;
+    for (const session of sessions) {
+      eventIds.push(makeSampleSessionEvent(sample, session).eventId);
+    }
+  }
+  if ((repository as { hasCompletedMemoryEvents?: (ids: string[]) => Promise<Record<string, boolean>> }).hasCompletedMemoryEvents) {
+    const completed = await (repository as { hasCompletedMemoryEvents: (ids: string[]) => Promise<Record<string, boolean>> }).hasCompletedMemoryEvents(eventIds);
+    return eventIds.every((eventId) => completed[eventId] === true);
+  }
+  for (const eventId of eventIds) {
+    if (!await hasCompletedMemoryEvent(repository, eventId)) return false;
+  }
+  return true;
+}
+
 export async function openLongMemEvalRepository(
   datasetPath: string,
   options: {
@@ -6551,15 +6444,18 @@ async function createLongMemEvalRepository(
     };
   }
 
-  const source = config.longMemEval.graphStore.mode === "neo4j"
-    ? config.longMemEval.graphStore.neo4j
-    : config.graphStore.neo4j;
-  assertNeo4jCredentials(source, config.longMemEval.graphStore.mode === "neo4j" ? "longMemEval.graphStore.neo4j" : "graphStore.neo4j");
+  if (readLongMemEvalGraphStoreMode(config) === "local") {
+    return {
+      repository: new SqliteContextEngineRepository(storePath, undefined, repositoryOptions),
+      close: undefined
+    };
+  }
 
   try {
     const graphStore = await createConfiguredLongMemEvalGraphStore(config, {
       initialize: !options.readOnly
     });
+    if (!graphStore) throw new Error("neo4j_graph_store_not_created");
     const repository = new SqliteContextEngineRepository(storePath, graphStore, repositoryOptions);
     return {
       repository,
@@ -7195,6 +7091,8 @@ export async function createConfiguredLongMemEvalGraphStore(
   config = getContextEngineConfig(),
   options: { initialize?: boolean } = {}
 ) {
+  const mode = readLongMemEvalGraphStoreMode(config);
+  if (mode === "local") return undefined;
   const graphStore = config.longMemEval.graphStore.mode === "neo4j"
     ? new Neo4jGraphMemoryStore({
       uri: config.longMemEval.graphStore.neo4j.uri,
@@ -7208,6 +7106,12 @@ export async function createConfiguredLongMemEvalGraphStore(
     : Neo4jGraphMemoryStore.fromConfig(config);
   if (options.initialize !== false) await graphStore.initialize();
   return graphStore;
+}
+
+export function readLongMemEvalGraphStoreMode(config: ReturnType<typeof getContextEngineConfig>) {
+  return config.longMemEval.graphStore.mode === "inherit"
+    ? config.graphStore.mode
+    : config.longMemEval.graphStore.mode;
 }
 
 function readQuestionId(sample: LongMemEvalSample) {

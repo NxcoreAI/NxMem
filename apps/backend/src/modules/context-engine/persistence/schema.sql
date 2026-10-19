@@ -345,6 +345,14 @@ CREATE INDEX IF NOT EXISTS idx_dreaming_run_candidates_run_status
 CREATE INDEX IF NOT EXISTS idx_dreaming_run_candidates_memory
   ON dreaming_run_candidates(memory_data_id, status, next_evaluate_at);
 
+-- ponytail: source_fact_ids 的 JSON 数组无法走索引，scope 查询靠此反向链接表（PK 前缀 fact_id）；
+-- 旧库首次升级需跑一次回填 INSERT（见 backfillStmFactLinks），量级 25 万行 ~4s
+CREATE TABLE IF NOT EXISTS stm_fact_links (
+  memory_data_id TEXT NOT NULL,
+  fact_id TEXT NOT NULL,
+  PRIMARY KEY (fact_id, memory_data_id)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS long_term_memories (
   memory_id TEXT PRIMARY KEY,
   tenant_id TEXT,
